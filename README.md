@@ -1,5 +1,7 @@
 # blobodbc
 
+> **Note:** This code is almost entirely AI-authored (Claude, Anthropic), albeit under close human supervision, and is for research and experimentation purposes. Successful experiments may be re-implemented in a more coordinated and curated manner.
+
 ODBC query execution as scalar functions returning JSON.
 
 Wraps [nanodbc](https://github.com/nanodbc/nanodbc) behind a narrow C API.
