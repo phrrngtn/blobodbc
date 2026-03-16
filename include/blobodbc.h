@@ -145,11 +145,49 @@ char *blobodbc_query_json_in_catalog(const char *conn_str,
                                       const char *query);
 
 /*
- * Execute a SQL statement that does not return a result set (DDL, DML).
- * Returns the number of affected rows, or -1 on error.
+ * Execute a SQL statement that does not return a result set.
+ * Intended for DDL (CREATE/ALTER/DROP) and plain DML (INSERT/UPDATE/DELETE/MERGE).
+ * Returns the number of affected rows (0 for DDL), or -1 on error.
+ *
+ * For DML with OUTPUT (SQL Server) or RETURNING (PostgreSQL) clauses,
+ * use blobodbc_query_json instead — those produce result sets.
+ *
  * Call blobodbc_errmsg() for error details.
  */
 int blobodbc_execute(const char *conn_str, const char *sql);
+
+/*
+ * Return primary keys via SQLPrimaryKeys as a JSON array of objects.
+ *
+ * Each object contains: TABLE_CAT, TABLE_SCHEM, TABLE_NAME, COLUMN_NAME,
+ * KEY_SEQ, PK_NAME.
+ *
+ * All filter parameters accept NULL for "no restriction".
+ */
+char *blobodbc_primary_keys(const char *conn_str,
+                             const char *catalog,
+                             const char *schema,
+                             const char *table);
+
+/*
+ * Return foreign keys via SQLForeignKeys as a JSON array of objects.
+ *
+ * Each object contains: PKTABLE_CAT, PKTABLE_SCHEM, PKTABLE_NAME,
+ * PKCOLUMN_NAME, FKTABLE_CAT, FKTABLE_SCHEM, FKTABLE_NAME,
+ * FKCOLUMN_NAME, KEY_SEQ, UPDATE_RULE, DELETE_RULE, FK_NAME, PK_NAME.
+ *
+ * Two modes:
+ *   - Specify fk_* params: "what does this table reference?"
+ *   - Specify pk_* params: "what references this table?"
+ * All filter parameters accept NULL for "no restriction".
+ */
+char *blobodbc_foreign_keys(const char *conn_str,
+                             const char *pk_catalog,
+                             const char *pk_schema,
+                             const char *pk_table,
+                             const char *fk_catalog,
+                             const char *fk_schema,
+                             const char *fk_table);
 
 /*
  * Produce an RFC 6902 JSON Patch from source to target.

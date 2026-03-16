@@ -596,6 +596,141 @@ static void odbc_query_in_catalog_func(duckdb_function_info info,
     }
 }
 
+/* ── odbc_primary_keys(conn_str, schema, table) -> JSON ──────────── */
+
+static void odbc_primary_keys_func(duckdb_function_info info,
+                                     duckdb_data_chunk input,
+                                     duckdb_vector output) {
+    idx_t size = duckdb_data_chunk_get_size(input);
+    duckdb_vector vec0 = duckdb_data_chunk_get_vector(input, 0);
+    duckdb_vector vec1 = duckdb_data_chunk_get_vector(input, 1);
+    duckdb_vector vec2 = duckdb_data_chunk_get_vector(input, 2);
+    duckdb_string_t *data0 = (duckdb_string_t *)duckdb_vector_get_data(vec0);
+    duckdb_string_t *data1 = (duckdb_string_t *)duckdb_vector_get_data(vec1);
+    duckdb_string_t *data2 = (duckdb_string_t *)duckdb_vector_get_data(vec2);
+    uint64_t *val0 = duckdb_vector_get_validity(vec0);
+    uint64_t *val1 = duckdb_vector_get_validity(vec1);
+    uint64_t *val2 = duckdb_vector_get_validity(vec2);
+
+    for (idx_t row = 0; row < size; row++) {
+        if ((val0 && !duckdb_validity_row_is_valid(val0, row)) ||
+            (val1 && !duckdb_validity_row_is_valid(val1, row)) ||
+            (val2 && !duckdb_validity_row_is_valid(val2, row))) {
+            duckdb_vector_ensure_validity_writable(output);
+            duckdb_validity_set_row_invalid(duckdb_vector_get_validity(output), row);
+            continue;
+        }
+        char *conn   = str_dup_z(&data0[row]);
+        char *schema = str_dup_z(&data1[row]);
+        char *table  = str_dup_z(&data2[row]);
+        char *result = blobodbc_primary_keys(conn, NULL, schema, table);
+        free(conn); free(schema); free(table);
+        if (result) {
+            duckdb_vector_assign_string_element(output, row, result);
+            blobodbc_free(result);
+        } else {
+            duckdb_scalar_function_set_error(info, blobodbc_errmsg());
+            return;
+        }
+    }
+}
+
+/* ── odbc_foreign_keys(conn_str, schema, table) -> JSON ──────────── */
+/* Returns FKs defined ON the specified table (FK side).              */
+
+static void odbc_foreign_keys_func(duckdb_function_info info,
+                                     duckdb_data_chunk input,
+                                     duckdb_vector output) {
+    idx_t size = duckdb_data_chunk_get_size(input);
+    duckdb_vector vec0 = duckdb_data_chunk_get_vector(input, 0);
+    duckdb_vector vec1 = duckdb_data_chunk_get_vector(input, 1);
+    duckdb_vector vec2 = duckdb_data_chunk_get_vector(input, 2);
+    duckdb_string_t *data0 = (duckdb_string_t *)duckdb_vector_get_data(vec0);
+    duckdb_string_t *data1 = (duckdb_string_t *)duckdb_vector_get_data(vec1);
+    duckdb_string_t *data2 = (duckdb_string_t *)duckdb_vector_get_data(vec2);
+    uint64_t *val0 = duckdb_vector_get_validity(vec0);
+    uint64_t *val1 = duckdb_vector_get_validity(vec1);
+    uint64_t *val2 = duckdb_vector_get_validity(vec2);
+
+    for (idx_t row = 0; row < size; row++) {
+        if ((val0 && !duckdb_validity_row_is_valid(val0, row)) ||
+            (val1 && !duckdb_validity_row_is_valid(val1, row)) ||
+            (val2 && !duckdb_validity_row_is_valid(val2, row))) {
+            duckdb_vector_ensure_validity_writable(output);
+            duckdb_validity_set_row_invalid(duckdb_vector_get_validity(output), row);
+            continue;
+        }
+        char *conn   = str_dup_z(&data0[row]);
+        char *schema = str_dup_z(&data1[row]);
+        char *table  = str_dup_z(&data2[row]);
+        /* FK table specified → "what does this table reference?" */
+        char *result = blobodbc_foreign_keys(conn,
+            NULL, NULL, NULL,           /* PK side: no filter */
+            NULL, schema, table);       /* FK side: this table */
+        free(conn); free(schema); free(table);
+        if (result) {
+            duckdb_vector_assign_string_element(output, row, result);
+            blobodbc_free(result);
+        } else {
+            duckdb_scalar_function_set_error(info, blobodbc_errmsg());
+            return;
+        }
+    }
+}
+
+/* ── odbc_foreign_keys(conn_str, fk_schema, fk_table, pk_schema, pk_table) ── */
+/* Full control: specify both sides of the FK relationship.                      */
+
+static void odbc_foreign_keys_func_5(duckdb_function_info info,
+                                       duckdb_data_chunk input,
+                                       duckdb_vector output) {
+    idx_t size = duckdb_data_chunk_get_size(input);
+    duckdb_vector vec0 = duckdb_data_chunk_get_vector(input, 0);
+    duckdb_vector vec1 = duckdb_data_chunk_get_vector(input, 1);
+    duckdb_vector vec2 = duckdb_data_chunk_get_vector(input, 2);
+    duckdb_vector vec3 = duckdb_data_chunk_get_vector(input, 3);
+    duckdb_vector vec4 = duckdb_data_chunk_get_vector(input, 4);
+    duckdb_string_t *data0 = (duckdb_string_t *)duckdb_vector_get_data(vec0);
+    duckdb_string_t *data1 = (duckdb_string_t *)duckdb_vector_get_data(vec1);
+    duckdb_string_t *data2 = (duckdb_string_t *)duckdb_vector_get_data(vec2);
+    duckdb_string_t *data3 = (duckdb_string_t *)duckdb_vector_get_data(vec3);
+    duckdb_string_t *data4 = (duckdb_string_t *)duckdb_vector_get_data(vec4);
+    uint64_t *val0 = duckdb_vector_get_validity(vec0);
+    uint64_t *val1 = duckdb_vector_get_validity(vec1);
+    uint64_t *val2 = duckdb_vector_get_validity(vec2);
+    uint64_t *val3 = duckdb_vector_get_validity(vec3);
+    uint64_t *val4 = duckdb_vector_get_validity(vec4);
+
+    for (idx_t row = 0; row < size; row++) {
+        if ((val0 && !duckdb_validity_row_is_valid(val0, row)) ||
+            (val1 && !duckdb_validity_row_is_valid(val1, row)) ||
+            (val2 && !duckdb_validity_row_is_valid(val2, row)) ||
+            (val3 && !duckdb_validity_row_is_valid(val3, row)) ||
+            (val4 && !duckdb_validity_row_is_valid(val4, row))) {
+            duckdb_vector_ensure_validity_writable(output);
+            duckdb_validity_set_row_invalid(duckdb_vector_get_validity(output), row);
+            continue;
+        }
+        char *conn      = str_dup_z(&data0[row]);
+        char *fk_schema = str_dup_z(&data1[row]);
+        char *fk_table  = str_dup_z(&data2[row]);
+        char *pk_schema = str_dup_z(&data3[row]);
+        char *pk_table  = str_dup_z(&data4[row]);
+        char *result = blobodbc_foreign_keys(conn,
+            NULL, pk_schema, pk_table,
+            NULL, fk_schema, fk_table);
+        free(conn); free(fk_schema); free(fk_table);
+        free(pk_schema); free(pk_table);
+        if (result) {
+            duckdb_vector_assign_string_element(output, row, result);
+            blobodbc_free(result);
+        } else {
+            duckdb_scalar_function_set_error(info, blobodbc_errmsg());
+            return;
+        }
+    }
+}
+
 /* ── odbc_execute(conn_str, sql) -> INTEGER (affected rows) ──────── */
 
 static void odbc_execute_func(duckdb_function_info info,
@@ -921,6 +1056,47 @@ static void register_functions(duckdb_connection connection) {
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_set_return_type(func, varchar_type);
         duckdb_scalar_function_set_function(func, odbc_query_in_catalog_func);
+        duckdb_register_scalar_function(connection, func);
+        duckdb_destroy_scalar_function(&func);
+    }
+
+    /* odbc_primary_keys(conn_str, schema, table) → JSON */
+    {
+        duckdb_scalar_function func = duckdb_create_scalar_function();
+        duckdb_scalar_function_set_name(func, "odbc_primary_keys");
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_set_return_type(func, varchar_type);
+        duckdb_scalar_function_set_function(func, odbc_primary_keys_func);
+        duckdb_register_scalar_function(connection, func);
+        duckdb_destroy_scalar_function(&func);
+    }
+
+    /* odbc_foreign_keys(conn_str, schema, table) → JSON (3-arg: FKs on table) */
+    {
+        duckdb_scalar_function func = duckdb_create_scalar_function();
+        duckdb_scalar_function_set_name(func, "odbc_foreign_keys");
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_set_return_type(func, varchar_type);
+        duckdb_scalar_function_set_function(func, odbc_foreign_keys_func);
+        duckdb_register_scalar_function(connection, func);
+        duckdb_destroy_scalar_function(&func);
+    }
+
+    /* odbc_foreign_keys(conn_str, fk_schema, fk_table, pk_schema, pk_table) → JSON (5-arg) */
+    {
+        duckdb_scalar_function func = duckdb_create_scalar_function();
+        duckdb_scalar_function_set_name(func, "odbc_foreign_keys");
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_set_return_type(func, varchar_type);
+        duckdb_scalar_function_set_function(func, odbc_foreign_keys_func_5);
         duckdb_register_scalar_function(connection, func);
         duckdb_destroy_scalar_function(&func);
     }

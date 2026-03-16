@@ -800,6 +800,88 @@ static std::string build_columns(const char *conn_str,
     return result.to_string();
 }
 
+/* ── SQLPrimaryKeys ──────────────────────────────────────────────── */
+
+static std::string build_primary_keys(const char *conn_str,
+                                       const char *catalog,
+                                       const char *schema,
+                                       const char *table) {
+    nanodbc::connection conn(conn_str);
+    SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt);
+    if (!SQL_SUCCEEDED(rc))
+        throw std::runtime_error("SQLAllocHandle failed for SQLPrimaryKeys");
+
+    rc = SQLPrimaryKeys(stmt,
+                        catalog ? (SQLCHAR *)catalog : nullptr,
+                        catalog ? SQL_NTS : 0,
+                        schema ? (SQLCHAR *)schema : nullptr,
+                        schema ? SQL_NTS : 0,
+                        table ? (SQLCHAR *)table : nullptr,
+                        table ? SQL_NTS : 0);
+    if (!SQL_SUCCEEDED(rc)) {
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        throw std::runtime_error("SQLPrimaryKeys failed");
+    }
+
+    auto result = stmt_result_to_json(stmt);
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    return result.to_string();
+}
+
+/* ── SQLForeignKeys ─────────────────────────────────────────────── */
+
+/*
+ * SQLForeignKeys can be called in two modes:
+ *   1. PK table specified → returns all FKs that reference it
+ *   2. FK table specified → returns all FKs defined on it
+ *
+ * We expose both modes via separate parameters. Pass the FK table
+ * identifiers to get "what does this table reference?".  Pass the
+ * PK table identifiers to get "what references this table?".
+ * Pass both for a specific relationship.
+ * Pass neither (all NULL) for all FKs visible in the current catalog.
+ */
+static std::string build_foreign_keys(const char *conn_str,
+                                       const char *pk_catalog,
+                                       const char *pk_schema,
+                                       const char *pk_table,
+                                       const char *fk_catalog,
+                                       const char *fk_schema,
+                                       const char *fk_table) {
+    nanodbc::connection conn(conn_str);
+    SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt);
+    if (!SQL_SUCCEEDED(rc))
+        throw std::runtime_error("SQLAllocHandle failed for SQLForeignKeys");
+
+    rc = SQLForeignKeys(stmt,
+                        pk_catalog ? (SQLCHAR *)pk_catalog : nullptr,
+                        pk_catalog ? SQL_NTS : 0,
+                        pk_schema ? (SQLCHAR *)pk_schema : nullptr,
+                        pk_schema ? SQL_NTS : 0,
+                        pk_table ? (SQLCHAR *)pk_table : nullptr,
+                        pk_table ? SQL_NTS : 0,
+                        fk_catalog ? (SQLCHAR *)fk_catalog : nullptr,
+                        fk_catalog ? SQL_NTS : 0,
+                        fk_schema ? (SQLCHAR *)fk_schema : nullptr,
+                        fk_schema ? SQL_NTS : 0,
+                        fk_table ? (SQLCHAR *)fk_table : nullptr,
+                        fk_table ? SQL_NTS : 0);
+    if (!SQL_SUCCEEDED(rc)) {
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        throw std::runtime_error("SQLForeignKeys failed");
+    }
+
+    auto result = stmt_result_to_json(stmt);
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    return result.to_string();
+}
+
 /* ── Execute in specific catalog (database) ─────────────────────── */
 
 static std::string build_query_in_catalog(const char *conn_str,
@@ -1117,6 +1199,43 @@ int blobodbc_execute(const char *conn_str, const char *sql) {
     } catch (const std::exception &e) {
         g_errmsg = e.what();
         return -1;
+    }
+}
+
+char *blobodbc_primary_keys(const char *conn_str,
+                             const char *catalog,
+                             const char *schema,
+                             const char *table) {
+    try {
+        g_errmsg.clear();
+        return strdup_result(build_primary_keys(conn_str, catalog, schema, table));
+    } catch (const nanodbc::database_error &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    }
+}
+
+char *blobodbc_foreign_keys(const char *conn_str,
+                             const char *pk_catalog,
+                             const char *pk_schema,
+                             const char *pk_table,
+                             const char *fk_catalog,
+                             const char *fk_schema,
+                             const char *fk_table) {
+    try {
+        g_errmsg.clear();
+        return strdup_result(build_foreign_keys(conn_str,
+            pk_catalog, pk_schema, pk_table,
+            fk_catalog, fk_schema, fk_table));
+    } catch (const nanodbc::database_error &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
     }
 }
 
