@@ -33,6 +33,7 @@ from blobodbc.models import (
     IndexSampleLog,
     PrimaryKeySampleLog,
     TableSampleLog,
+    TriggerSampleLog,
 )
 
 # Map catalog query names to sample log tables
@@ -42,6 +43,7 @@ QUERY_TO_TABLE = {
     "primary_keys": PrimaryKeySampleLog,
     "foreign_keys": ForeignKeySampleLog,
     "indexes": IndexSampleLog,
+    "triggers": TriggerSampleLog,
 }
 
 EXTENSION_PATH = None  # Set at runtime

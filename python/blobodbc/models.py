@@ -110,3 +110,15 @@ class IndexSampleLog(Base):
     duration_ms = Column(Float)
     payload = Column(Text, nullable=False)
     error = Column(Text)
+
+
+class TriggerSampleLog(Base):
+    __tablename__ = "trigger_sample_log"
+
+    dataserver_id = Column(Integer, primary_key=True)
+    catalog_name = Column(String, primary_key=True)
+    schema_name = Column(String, primary_key=True)
+    sample_time = Column(DateTime, primary_key=True)
+    duration_ms = Column(Float)
+    payload = Column(Text, nullable=False)
+    error = Column(Text)
