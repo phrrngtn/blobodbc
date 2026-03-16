@@ -39,3 +39,6 @@ sql: |
   WHERE cl.relkind IN ('r', 'p')
     AND att.attnum > 0
     AND NOT att.attisdropped
+    AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

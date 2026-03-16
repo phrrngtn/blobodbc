@@ -32,3 +32,5 @@ sql: |
   JOIN pg_namespace AS nsp ON nsp.oid = cl.relnamespace
   WHERE cl.relkind IN ('r', 'p', 'f')
     AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

@@ -27,3 +27,6 @@ sql: |
   JOIN pg_attribute AS att
       ON att.attrelid = con.conrelid AND att.attnum = u.attnum
   WHERE con.contype = 'p'
+    AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'
