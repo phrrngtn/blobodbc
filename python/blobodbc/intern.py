@@ -102,7 +102,7 @@ def nest_payload(duck, payload_json, kind):
         return payload_json
 
     result = duck.execute(
-        "SELECT json_nest(?, ?)", [payload_json, keys]
+        "SELECT bt_json_nest(?, ?)", [payload_json, keys]
     ).fetchone()[0]
     return result
 
@@ -135,7 +135,7 @@ def intern_sample(duck, dataserver_id, catalog_name, schema_name, kind,
 
     # Diff: current → new
     diff_raw = duck.execute(
-        "SELECT json_from_diff(?, ?)", [current_snapshot, nested]
+        "SELECT bt_json_from_diff(?, ?)", [current_snapshot, nested]
     ).fetchone()[0]
     diff = json.loads(diff_raw)
 
@@ -144,7 +144,7 @@ def intern_sample(duck, dataserver_id, catalog_name, schema_name, kind,
 
     # Compute reverse patch: new → current (so we can reconstruct current from new)
     reverse_patch_raw = duck.execute(
-        "SELECT json_from_diff(?, ?)", [nested, current_snapshot]
+        "SELECT bt_json_from_diff(?, ?)", [nested, current_snapshot]
     ).fetchone()[0]
 
     new_rev = current_rev + 1
@@ -205,7 +205,7 @@ def reconstruct_at_revision(duck, dataserver_id, catalog_name, schema_name,
     doc = snapshot
     for rev_num, patch in patches:
         doc = duck.execute(
-            "SELECT json_apply_patch(?, ?)", [doc, patch]
+            "SELECT bt_json_apply_patch(?, ?)", [doc, patch]
         ).fetchone()[0]
 
     return doc

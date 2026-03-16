@@ -2,11 +2,11 @@
  * SQLite loadable extension for ODBC queries.
  *
  * Registers:
- *   odbc_query(conn_str, sql)                -> JSON TEXT
- *   odbc_query(conn_str, sql, p1, p2, ...)   -> JSON TEXT (with bind params)
- *   odbc_clob(conn_str, sql)                 -> TEXT
- *   odbc_clob(conn_str, sql, p1, p2, ...)    -> TEXT (with bind params)
- *   odbc_driver_info(conn_str)               -> JSON TEXT
+ *   bo_query(conn_str, sql)                -> JSON TEXT
+ *   bo_query(conn_str, sql, p1, p2, ...)   -> JSON TEXT (with bind params)
+ *   bo_clob(conn_str, sql)                 -> TEXT
+ *   bo_clob(conn_str, sql, p1, p2, ...)    -> TEXT (with bind params)
+ *   bo_driver_info(conn_str)               -> JSON TEXT
  */
 
 #include <sqlite3ext.h>
@@ -17,11 +17,11 @@ SQLITE_EXTENSION_INIT1
 #include <stdlib.h>
 #include <string.h>
 
-/* ── odbc_query: variadic scalar function ────────────────────────── */
+/* ── bo_query: variadic scalar function ──────────────────────────── */
 
 static void odbc_query_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 2) {
-        sqlite3_result_error(ctx, "odbc_query requires at least 2 arguments", -1);
+        sqlite3_result_error(ctx, "bo_query requires at least 2 arguments", -1);
         return;
     }
     if (sqlite3_value_type(argv[0]) == SQLITE_NULL ||
@@ -54,11 +54,11 @@ static void odbc_query_func(sqlite3_context *ctx, int argc, sqlite3_value **argv
     }
 }
 
-/* ── odbc_clob: variadic scalar function ─────────────────────────── */
+/* ── bo_clob: variadic scalar function ───────────────────────────── */
 
 static void odbc_clob_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 2) {
-        sqlite3_result_error(ctx, "odbc_clob requires at least 2 arguments", -1);
+        sqlite3_result_error(ctx, "bo_clob requires at least 2 arguments", -1);
         return;
     }
     if (sqlite3_value_type(argv[0]) == SQLITE_NULL ||
@@ -91,7 +91,7 @@ static void odbc_clob_func(sqlite3_context *ctx, int argc, sqlite3_value **argv)
     }
 }
 
-/* ── odbc_query_named(conn_str, sql, bind_json) ──────────────────── */
+/* ── bo_query_named(conn_str, sql, bind_json) ────────────────────── */
 
 static void odbc_query_named_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (sqlite3_value_type(argv[0]) == SQLITE_NULL ||
@@ -114,7 +114,7 @@ static void odbc_query_named_func(sqlite3_context *ctx, int argc, sqlite3_value 
     }
 }
 
-/* ── odbc_clob_named(conn_str, sql, bind_json) ───────────────────── */
+/* ── bo_clob_named(conn_str, sql, bind_json) ─────────────────────── */
 
 static void odbc_clob_named_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (sqlite3_value_type(argv[0]) == SQLITE_NULL ||
@@ -137,7 +137,7 @@ static void odbc_clob_named_func(sqlite3_context *ctx, int argc, sqlite3_value *
     }
 }
 
-/* ── odbc_driver_info(conn_str) ───────────────────────────────────── */
+/* ── bo_driver_info(conn_str) ─────────────────────────────────────── */
 
 static void odbc_driver_info_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (sqlite3_value_type(argv[0]) == SQLITE_NULL) {
@@ -156,11 +156,11 @@ static void odbc_driver_info_func(sqlite3_context *ctx, int argc, sqlite3_value 
     }
 }
 
-/* ── odbc_tables(conn_str [, schema [, type]]) ────────────────────── */
+/* ── bo_tables(conn_str [, schema [, type]]) ──────────────────────── */
 
 static void odbc_tables_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 1) {
-        sqlite3_result_error(ctx, "odbc_tables requires at least 1 argument", -1);
+        sqlite3_result_error(ctx, "bo_tables requires at least 1 argument", -1);
         return;
     }
     if (sqlite3_value_type(argv[0]) == SQLITE_NULL) {
@@ -186,11 +186,11 @@ static void odbc_tables_func(sqlite3_context *ctx, int argc, sqlite3_value **arg
     }
 }
 
-/* ── odbc_columns(conn_str, table [, schema]) ─────────────────────── */
+/* ── bo_columns(conn_str, table [, schema]) ───────────────────────── */
 
 static void odbc_columns_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 2) {
-        sqlite3_result_error(ctx, "odbc_columns requires at least 2 arguments", -1);
+        sqlite3_result_error(ctx, "bo_columns requires at least 2 arguments", -1);
         return;
     }
     if (sqlite3_value_type(argv[0]) == SQLITE_NULL ||
@@ -213,7 +213,7 @@ static void odbc_columns_func(sqlite3_context *ctx, int argc, sqlite3_value **ar
     }
 }
 
-/* ── odbc_query_in_catalog(conn_str, catalog, sql) ────────────────── */
+/* ── bo_query_in_catalog(conn_str, catalog, sql) ──────────────────── */
 
 static void odbc_query_in_catalog_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (sqlite3_value_type(argv[0]) == SQLITE_NULL ||
@@ -246,35 +246,35 @@ int sqlite3_blobodbc_init(sqlite3 *db, char **pzErrMsg,
     int rc;
     SQLITE_EXTENSION_INIT2(pApi);
 
-    rc = sqlite3_create_function(db, "odbc_query", -1,
+    rc = sqlite3_create_function(db, "bo_query", -1,
                                   SQLITE_UTF8, NULL, odbc_query_func, NULL, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_create_function(db, "odbc_clob", -1,
+    rc = sqlite3_create_function(db, "bo_clob", -1,
                                   SQLITE_UTF8, NULL, odbc_clob_func, NULL, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_create_function(db, "odbc_query_named", 3,
+    rc = sqlite3_create_function(db, "bo_query_named", 3,
                                   SQLITE_UTF8, NULL, odbc_query_named_func, NULL, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_create_function(db, "odbc_clob_named", 3,
+    rc = sqlite3_create_function(db, "bo_clob_named", 3,
                                   SQLITE_UTF8, NULL, odbc_clob_named_func, NULL, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_create_function(db, "odbc_driver_info", 1,
+    rc = sqlite3_create_function(db, "bo_driver_info", 1,
                                   SQLITE_UTF8, NULL, odbc_driver_info_func, NULL, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_create_function(db, "odbc_tables", -1,
+    rc = sqlite3_create_function(db, "bo_tables", -1,
                                   SQLITE_UTF8, NULL, odbc_tables_func, NULL, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_create_function(db, "odbc_columns", -1,
+    rc = sqlite3_create_function(db, "bo_columns", -1,
                                   SQLITE_UTF8, NULL, odbc_columns_func, NULL, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_create_function(db, "odbc_query_in_catalog", 3,
+    rc = sqlite3_create_function(db, "bo_query_in_catalog", 3,
                                   SQLITE_UTF8, NULL, odbc_query_in_catalog_func, NULL, NULL);
     return rc;
 }

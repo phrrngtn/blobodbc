@@ -2,13 +2,13 @@
  * DuckDB C API extension for ODBC queries.
  *
  * Registers:
- *   odbc_query(conn_str, sql)                    -> VARCHAR (JSON)
- *   odbc_query(conn_str, sql, jmespath)          -> VARCHAR (JSON, jmespath stub)
- *   odbc_clob(conn_str, sql)                     -> VARCHAR
- *   odbc_query_named(conn_str, sql, bind_json)   -> VARCHAR (JSON)
- *   odbc_query_named(conn_str, sql, bind_json, jmespath) -> VARCHAR (JSON, jmespath stub)
- *   odbc_clob_named(conn_str, sql, bind_json)    -> VARCHAR
- *   odbc_driver_info(conn_str)                   -> VARCHAR (JSON)
+ *   bo_query(conn_str, sql)                    -> VARCHAR (JSON)
+ *   bo_query(conn_str, sql, jmespath)          -> VARCHAR (JSON, jmespath stub)
+ *   bo_clob(conn_str, sql)                     -> VARCHAR
+ *   bo_query_named(conn_str, sql, bind_json)   -> VARCHAR (JSON)
+ *   bo_query_named(conn_str, sql, bind_json, jmespath) -> VARCHAR (JSON, jmespath stub)
+ *   bo_clob_named(conn_str, sql, bind_json)    -> VARCHAR
+ *   bo_driver_info(conn_str)                   -> VARCHAR (JSON)
  */
 
 #define DUCKDB_EXTENSION_NAME blobodbc
@@ -47,7 +47,7 @@ static char *str_dup_z(duckdb_string_t *s) {
     return z;
 }
 
-/* ── odbc_query(conn_str, sql) -> JSON ───────────────────────────── */
+/* ── bo_query(conn_str, sql) -> JSON ─────────────────────────────── */
 
 static void odbc_query_func(duckdb_function_info info,
                               duckdb_data_chunk input,
@@ -86,7 +86,7 @@ static void odbc_query_func(duckdb_function_info info,
     }
 }
 
-/* ── odbc_query(conn_str, sql, jmespath) -> JSON ─────────────────── */
+/* ── bo_query(conn_str, sql, jmespath) -> JSON ───────────────────── */
 
 static void odbc_query_jmespath_func(duckdb_function_info info,
                                       duckdb_data_chunk input,
@@ -138,7 +138,7 @@ static void odbc_query_jmespath_func(duckdb_function_info info,
     }
 }
 
-/* ── odbc_clob(conn_str, sql) -> TEXT ────────────────────────────── */
+/* ── bo_clob(conn_str, sql) -> TEXT ──────────────────────────────── */
 
 static void odbc_clob_func(duckdb_function_info info,
                              duckdb_data_chunk input,
@@ -284,7 +284,7 @@ static void named_jmespath_func(duckdb_function_info info,
     }
 }
 
-/* ── odbc_driver_info(conn_str) -> JSON ───────────────────────────── */
+/* ── bo_driver_info(conn_str) -> JSON ─────────────────────────────── */
 
 static void odbc_driver_info_func(duckdb_function_info info,
                                     duckdb_data_chunk input,
@@ -317,11 +317,11 @@ static void odbc_driver_info_func(duckdb_function_info info,
     }
 }
 
-/* ── odbc_tables: 1–4 arg overloads ──────────────────────────────── */
-/*   odbc_tables(conn_str)                          — all tables      */
-/*   odbc_tables(conn_str, schema)                  — schema filter   */
-/*   odbc_tables(conn_str, schema, type)            — + type filter   */
-/*   odbc_tables(conn_str, schema, type, catalog)   — + catalog       */
+/* ── bo_tables: 1–4 arg overloads ────────────────────────────────── */
+/*   bo_tables(conn_str)                          — all tables        */
+/*   bo_tables(conn_str, schema)                  — schema filter     */
+/*   bo_tables(conn_str, schema, type)            — + type filter     */
+/*   bo_tables(conn_str, schema, type, catalog)   — + catalog         */
 
 static void odbc_tables_func_1(duckdb_function_info info,
                                  duckdb_data_chunk input,
@@ -461,10 +461,10 @@ static void odbc_tables_func_4(duckdb_function_info info,
     }
 }
 
-/* ── odbc_columns: 1–3 arg overloads ────────────────────────────── */
-/*   odbc_columns(conn_str)                         — all columns     */
-/*   odbc_columns(conn_str, schema)                 — schema filter   */
-/*   odbc_columns(conn_str, schema, table)          — + table filter  */
+/* ── bo_columns: 1–3 arg overloads ──────────────────────────────── */
+/*   bo_columns(conn_str)                         — all columns       */
+/*   bo_columns(conn_str, schema)                 — schema filter     */
+/*   bo_columns(conn_str, schema, table)          — + table filter    */
 
 static void odbc_columns_func_1(duckdb_function_info info,
                                   duckdb_data_chunk input,
@@ -562,7 +562,7 @@ static void odbc_columns_func_3(duckdb_function_info info,
     }
 }
 
-/* ── odbc_query_in_catalog(conn_str, catalog, sql) -> JSON ───────── */
+/* ── bo_query_in_catalog(conn_str, catalog, sql) -> JSON ─────────── */
 
 static void odbc_query_in_catalog_func(duckdb_function_info info,
                                          duckdb_data_chunk input,
@@ -601,7 +601,7 @@ static void odbc_query_in_catalog_func(duckdb_function_info info,
     }
 }
 
-/* ── odbc_primary_keys(conn_str, schema, table) -> JSON ──────────── */
+/* ── bo_primary_keys(conn_str, schema, table) -> JSON ────────────── */
 
 static void odbc_primary_keys_func(duckdb_function_info info,
                                      duckdb_data_chunk input,
@@ -640,7 +640,7 @@ static void odbc_primary_keys_func(duckdb_function_info info,
     }
 }
 
-/* ── odbc_foreign_keys(conn_str, schema, table) -> JSON ──────────── */
+/* ── bo_foreign_keys(conn_str, schema, table) -> JSON ────────────── */
 /* Returns FKs defined ON the specified table (FK side).              */
 
 static void odbc_foreign_keys_func(duckdb_function_info info,
@@ -683,7 +683,7 @@ static void odbc_foreign_keys_func(duckdb_function_info info,
     }
 }
 
-/* ── odbc_foreign_keys(conn_str, fk_schema, fk_table, pk_schema, pk_table) ── */
+/* ── bo_foreign_keys(conn_str, fk_schema, fk_table, pk_schema, pk_table) ── */
 /* Full control: specify both sides of the FK relationship.                      */
 
 static void odbc_foreign_keys_func_5(duckdb_function_info info,
@@ -736,7 +736,7 @@ static void odbc_foreign_keys_func_5(duckdb_function_info info,
     }
 }
 
-/* ── odbc_execute(conn_str, sql) -> INTEGER (affected rows) ──────── */
+/* ── bo_execute(conn_str, sql) -> INTEGER (affected rows) ────────── */
 
 static void odbc_execute_func(duckdb_function_info info,
                                 duckdb_data_chunk input,
@@ -777,7 +777,7 @@ static void register_functions(duckdb_connection connection) {
 
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_query");
+        duckdb_scalar_function_set_name(func, "bo_query");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_set_return_type(func, varchar_type);
@@ -786,10 +786,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_query(conn_str, sql, jmespath) → JSON (3-arg overload) */
+    /* bo_query(conn_str, sql, jmespath) → JSON (3-arg overload) */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_query");
+        duckdb_scalar_function_set_name(func, "bo_query");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
@@ -801,7 +801,7 @@ static void register_functions(duckdb_connection connection) {
 
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_clob");
+        duckdb_scalar_function_set_name(func, "bo_clob");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_set_return_type(func, varchar_type);
@@ -810,10 +810,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_query_named(conn_str, sql, bind_json) → JSON */
+    /* bo_query_named(conn_str, sql, bind_json) → JSON */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_query_named");
+        duckdb_scalar_function_set_name(func, "bo_query_named");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
@@ -824,10 +824,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_query_named(conn_str, sql, bind_json, jmespath) → JSON (4-arg) */
+    /* bo_query_named(conn_str, sql, bind_json, jmespath) → JSON (4-arg) */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_query_named");
+        duckdb_scalar_function_set_name(func, "bo_query_named");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
@@ -839,10 +839,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_clob_named(conn_str, sql, bind_json) → TEXT */
+    /* bo_clob_named(conn_str, sql, bind_json) → TEXT */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_clob_named");
+        duckdb_scalar_function_set_name(func, "bo_clob_named");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
@@ -853,10 +853,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_driver_info(conn_str) → JSON */
+    /* bo_driver_info(conn_str) → JSON */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_driver_info");
+        duckdb_scalar_function_set_name(func, "bo_driver_info");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_set_return_type(func, varchar_type);
         duckdb_scalar_function_set_function(func, odbc_driver_info_func);
@@ -864,10 +864,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_tables(conn_str) → JSON (1-arg) */
+    /* bo_tables(conn_str) → JSON (1-arg) */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_tables");
+        duckdb_scalar_function_set_name(func, "bo_tables");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_set_return_type(func, varchar_type);
         duckdb_scalar_function_set_function(func, odbc_tables_func_1);
@@ -875,10 +875,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_tables(conn_str, schema) → JSON (2-arg) */
+    /* bo_tables(conn_str, schema) → JSON (2-arg) */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_tables");
+        duckdb_scalar_function_set_name(func, "bo_tables");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_set_return_type(func, varchar_type);
@@ -887,10 +887,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_tables(conn_str, schema, type) → JSON (3-arg) */
+    /* bo_tables(conn_str, schema, type) → JSON (3-arg) */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_tables");
+        duckdb_scalar_function_set_name(func, "bo_tables");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
@@ -900,10 +900,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_tables(conn_str, schema, type, catalog) → JSON (4-arg) */
+    /* bo_tables(conn_str, schema, type, catalog) → JSON (4-arg) */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_tables");
+        duckdb_scalar_function_set_name(func, "bo_tables");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
@@ -914,10 +914,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_columns(conn_str) → JSON (1-arg) */
+    /* bo_columns(conn_str) → JSON (1-arg) */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_columns");
+        duckdb_scalar_function_set_name(func, "bo_columns");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_set_return_type(func, varchar_type);
         duckdb_scalar_function_set_function(func, odbc_columns_func_1);
@@ -925,10 +925,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_columns(conn_str, schema) → JSON (2-arg) */
+    /* bo_columns(conn_str, schema) → JSON (2-arg) */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_columns");
+        duckdb_scalar_function_set_name(func, "bo_columns");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_set_return_type(func, varchar_type);
@@ -937,10 +937,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_columns(conn_str, schema, table) → JSON (3-arg) */
+    /* bo_columns(conn_str, schema, table) → JSON (3-arg) */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_columns");
+        duckdb_scalar_function_set_name(func, "bo_columns");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
@@ -950,10 +950,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_query_in_catalog(conn_str, catalog, sql) → JSON */
+    /* bo_query_in_catalog(conn_str, catalog, sql) → JSON */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_query_in_catalog");
+        duckdb_scalar_function_set_name(func, "bo_query_in_catalog");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
@@ -963,10 +963,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_primary_keys(conn_str, schema, table) → JSON */
+    /* bo_primary_keys(conn_str, schema, table) → JSON */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_primary_keys");
+        duckdb_scalar_function_set_name(func, "bo_primary_keys");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
@@ -976,10 +976,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_foreign_keys(conn_str, schema, table) → JSON (3-arg: FKs on table) */
+    /* bo_foreign_keys(conn_str, schema, table) → JSON (3-arg: FKs on table) */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_foreign_keys");
+        duckdb_scalar_function_set_name(func, "bo_foreign_keys");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
@@ -989,10 +989,10 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_foreign_keys(conn_str, fk_schema, fk_table, pk_schema, pk_table) → JSON (5-arg) */
+    /* bo_foreign_keys(conn_str, fk_schema, fk_table, pk_schema, pk_table) → JSON (5-arg) */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_foreign_keys");
+        duckdb_scalar_function_set_name(func, "bo_foreign_keys");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
@@ -1004,11 +1004,11 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
-    /* odbc_execute(conn_str, sql) → INTEGER */
+    /* bo_execute(conn_str, sql) → INTEGER */
     {
         duckdb_logical_type int_type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
         duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "odbc_execute");
+        duckdb_scalar_function_set_name(func, "bo_execute");
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_add_parameter(func, varchar_type);
         duckdb_scalar_function_set_return_type(func, int_type);

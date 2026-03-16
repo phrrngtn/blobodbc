@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test odbc_driver_info() via the DuckDB extension.
+Test bo_driver_info() via the DuckDB extension.
 
 Usage:
     uv run --with duckdb python test/test_driver_info_duckdb.py [--pretty]
@@ -43,7 +43,7 @@ def main():
         print(f"Probing: {label} ...", file=sys.stderr)
         try:
             raw = conn.execute(
-                "SELECT odbc_driver_info(?)", [conn_str]
+                "SELECT bo_driver_info(?)", [conn_str]
             ).fetchone()[0]
             info = json.loads(raw)
             info["label"] = label

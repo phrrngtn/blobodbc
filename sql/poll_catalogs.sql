@@ -8,7 +8,7 @@
 --
 -- This script:
 --   1. Builds connection strings for each dataserver
---   2. Calls odbc_driver_info() to get the catalogs list
+--   2. Calls bo_driver_info() to get the catalogs list
 --   3. Compares against open intervals in catalog_interval
 --   4. Opens new intervals for newly-visible catalogs
 --   5. Closes intervals for catalogs that have disappeared
@@ -36,13 +36,13 @@ SELECT
     ) AS conn_str
 FROM dataserver AS d;
 
--- Fetch catalogs from each dataserver via odbc_driver_info
+-- Fetch catalogs from each dataserver via bo_driver_info
 CREATE OR REPLACE TEMP TABLE poll_results AS
 WITH RAW_INFO AS (
     SELECT
         pc.dataserver_id,
         pc.dataserver_name,
-        odbc_driver_info(pc.conn_str)::JSON AS info
+        bo_driver_info(pc.conn_str)::JSON AS info
     FROM poll_connections AS pc
 ),
 CATALOG_ROWS AS (

@@ -115,9 +115,9 @@ def resolve_secret(ref):
 
 
 def detect_dialect(duck, conn_str):
-    """Detect the DBMS dialect via odbc_driver_info."""
+    """Detect the DBMS dialect via bo_driver_info."""
     raw = duck.execute(
-        "SELECT odbc_driver_info(?)", [conn_str]
+        "SELECT bo_driver_info(?)", [conn_str]
     ).fetchone()[0]
     info = json.loads(raw)
     dbms = info.get("get_info", {}).get("SQL_DBMS_NAME", "")
@@ -134,7 +134,7 @@ def detect_dialect(duck, conn_str):
 def get_schemas(duck, conn_str):
     """Get the list of schemas from the driver."""
     raw = duck.execute(
-        "SELECT odbc_driver_info(?)", [conn_str]
+        "SELECT bo_driver_info(?)", [conn_str]
     ).fetchone()[0]
     info = json.loads(raw)
     schemas = []
@@ -148,7 +148,7 @@ def get_schemas(duck, conn_str):
 def get_catalogs(duck, conn_str):
     """Get the list of catalogs from the driver."""
     raw = duck.execute(
-        "SELECT odbc_driver_info(?)", [conn_str]
+        "SELECT bo_driver_info(?)", [conn_str]
     ).fetchone()[0]
     info = json.loads(raw)
     catalogs = []
@@ -177,7 +177,7 @@ def run_catalog_query(duck, conn_str, query_sql, where_fragments, params):
 
     bind_json = json.dumps(active_params)
     raw = duck.execute(
-        "SELECT odbc_query_named(?, ?, ?)", [conn_str, sql, bind_json]
+        "SELECT bo_query_named(?, ?, ?)", [conn_str, sql, bind_json]
     ).fetchone()[0]
     return raw
 
