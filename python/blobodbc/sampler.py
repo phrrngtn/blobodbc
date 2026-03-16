@@ -27,6 +27,7 @@ import sqlalchemy as sa
 
 from blobodbc.models import (
     Base,
+    CallableSampleLog,
     ColumnSampleLog,
     Dataserver,
     ForeignKeySampleLog,
@@ -44,6 +45,7 @@ QUERY_TO_TABLE = {
     "foreign_keys": ForeignKeySampleLog,
     "indexes": IndexSampleLog,
     "triggers": TriggerSampleLog,
+    "callables": CallableSampleLog,
 }
 
 EXTENSION_PATH = None  # Set at runtime

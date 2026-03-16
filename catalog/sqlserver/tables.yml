@@ -21,7 +21,7 @@ sql: |
       t.modify_date,
       p.rows                    AS row_count,
       t.is_tracked_by_cdc,
-      t.is_change_tracked,
+      CASE WHEN ct.object_id IS NOT NULL THEN 1 ELSE 0 END AS is_change_tracked,
       t.temporal_type_desc,
       t.history_table_id,
       CASE WHEN t.history_table_id IS NOT NULL
@@ -39,6 +39,8 @@ sql: |
   LEFT JOIN sys.partitions AS p
       ON p.object_id = t.object_id
      AND p.index_id IN (0, 1)
+  LEFT JOIN sys.change_tracking_tables AS ct
+      ON ct.object_id = t.object_id
   LEFT JOIN sys.tables AS ht
       ON ht.object_id = t.history_table_id
   LEFT JOIN (
