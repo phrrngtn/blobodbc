@@ -18,10 +18,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Embedded catalog query data (generated at build time from catalog YAML files) */
-extern const unsigned char blobodbc_catalog_json[];
-extern const unsigned int blobodbc_catalog_json_len;
-
 DUCKDB_EXTENSION_EXTERN
 
 /* ── String helpers ───────────────────────────────────────────────── */
@@ -880,124 +876,11 @@ static void register_functions(duckdb_connection connection) {
     duckdb_destroy_logical_type(&varchar_type);
 }
 
-/* ── Populate catalog_queries table ──────────────────────────────── */
-
-static void populate_catalog_queries(duckdb_connection connection) {
-    duckdb_state state;
-    duckdb_result result;
-
-    /* Create schema and table if they don't exist */
-    state = duckdb_query(connection,
-        "CREATE SCHEMA IF NOT EXISTS blobodbc", &result);
-    duckdb_destroy_result(&result);
-    if (state == DuckDBError) return;
-
-    state = duckdb_query(connection,
-        "CREATE TABLE IF NOT EXISTS blobodbc.catalog_queries ("
-        "  dialect VARCHAR NOT NULL,"
-        "  name VARCHAR NOT NULL,"
-        "  description VARCHAR,"
-        "  sql VARCHAR NOT NULL,"
-        "  parameters JSON,"
-        "  where_fragments JSON,"
-        "  PRIMARY KEY (dialect, name)"
-        ")", &result);
-    duckdb_destroy_result(&result);
-    if (state == DuckDBError) return;
-
-    /* Insert the embedded JSON blob as a single value, then
-     * unnest it into rows.  This is a single SQL round-trip
-     * rather than N prepared-statement executions. */
-    duckdb_prepared_statement stmt;
-    state = duckdb_prepare(connection,
-        "INSERT OR REPLACE INTO blobodbc.catalog_queries "
-        "SELECT "
-        "  e->>'dialect' AS dialect,"
-        "  e->>'name' AS name,"
-        "  e->>'description' AS description,"
-        "  e->>'sql' AS sql,"
-        "  e->'parameters' AS parameters,"
-        "  e->'where_fragments' AS where_fragments "
-        "FROM (SELECT unnest(from_json($1::JSON, '[\"json\"]')) AS e)",
-        &stmt);
-    if (state == DuckDBError) return;
-
-    duckdb_bind_varchar(stmt, 1, (const char *)blobodbc_catalog_json);
-    state = duckdb_execute_prepared(stmt, &result);
-    duckdb_destroy_result(&result);
-    duckdb_destroy_prepare(&stmt);
-}
-
-/* ── Create derived views ────────────────────────────────────────── */
-
-static void create_views(duckdb_connection connection) {
-    duckdb_state state;
-    duckdb_result result;
-
-    /* changelog: human-readable schema change log derived from the
-     * TTST reverse patch chain.  Flips reverse-patch semantics to
-     * show forward changes (ADD/ALTER/DROP) and parses JSON Pointer
-     * paths into schema/table/column/attribute components.
-     *
-     * Depends on schema_snapshot_patch (created by the intern pipeline).
-     * The view is CREATE OR REPLACE so it's safe to re-run on every load.
-     * If the table doesn't exist yet, the view is created but will error
-     * on query — which is fine, it just means no samples have been interned. */
-    state = duckdb_query(connection,
-        "CREATE OR REPLACE VIEW blobodbc.changelog AS "
-        "WITH PATCHES AS ("
-        "    SELECT"
-        "        p.dataserver_id,"
-        "        p.catalog_name,"
-        "        p.schema_name,"
-        "        p.kind,"
-        "        p.revision_num,"
-        "        p.captured_at,"
-        "        unnest(from_json(p.patch::JSON, '[\"json\"]')) AS op"
-        "    FROM schema_snapshot_patch AS p"
-        ") "
-        "SELECT"
-        "    p.dataserver_id,"
-        "    p.catalog_name,"
-        "    p.schema_name AS sample_schema,"
-        "    p.captured_at,"
-        "    p.kind,"
-        "    p.revision_num,"
-        "    CASE op->>'op'"
-        "        WHEN 'remove' THEN 'ADD'"
-        "        WHEN 'add'    THEN 'DROP'"
-        "        WHEN 'replace' THEN 'ALTER'"
-        "    END AS change_type,"
-        "    op->>'path' AS path,"
-        "    split_part(op->>'path', '/', 2) AS object_schema,"
-        "    CASE WHEN length(op->>'path') - length(replace(op->>'path', '/', '')) >= 2"
-        "         THEN split_part(op->>'path', '/', 3)"
-        "         ELSE NULL"
-        "    END AS table_name,"
-        "    CASE WHEN length(op->>'path') - length(replace(op->>'path', '/', '')) >= 3"
-        "         THEN split_part(op->>'path', '/', 4)"
-        "         ELSE NULL"
-        "    END AS column_or_constraint,"
-        "    CASE WHEN length(op->>'path') - length(replace(op->>'path', '/', '')) >= 4"
-        "         THEN split_part(op->>'path', '/', 5)"
-        "         ELSE NULL"
-        "    END AS attribute,"
-        "    CASE op->>'op'"
-        "        WHEN 'replace' THEN op->>'value'"
-        "        ELSE NULL"
-        "    END AS old_value"
-        " FROM PATCHES AS p",
-        &result);
-    duckdb_destroy_result(&result);
-}
-
 /* ── Extension entrypoint ────────────────────────────────────────── */
 
 DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection,
                              duckdb_extension_info info,
                              struct duckdb_extension_access *access) {
     register_functions(connection);
-    populate_catalog_queries(connection);
-    create_views(connection);
     return true;
 }
