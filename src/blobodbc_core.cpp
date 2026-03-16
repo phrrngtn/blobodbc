@@ -1077,6 +1077,49 @@ char *blobodbc_query_json_in_catalog(const char *conn_str,
     }
 }
 
+int blobodbc_execute(const char *conn_str, const char *sql) {
+    try {
+        g_errmsg.clear();
+        nanodbc::connection conn(conn_str);
+        SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
+        SQLHSTMT stmt = SQL_NULL_HSTMT;
+        SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt);
+        if (!SQL_SUCCEEDED(rc))
+            throw std::runtime_error("SQLAllocHandle failed");
+
+        rc = SQLExecDirect(stmt, (SQLCHAR *)sql, SQL_NTS);
+        if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
+            /* Extract error message from diagnostics */
+            SQLCHAR state[6] = {0}, msg[1024] = {0};
+            SQLINTEGER native = 0;
+            SQLSMALLINT len = 0;
+            SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, state, &native,
+                          msg, sizeof(msg), &len);
+            SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+            if (len > 0)
+                throw std::runtime_error(std::string(reinterpret_cast<char *>(msg), len));
+            else
+                throw std::runtime_error(
+                    std::string("ODBC error SQLSTATE=") +
+                    reinterpret_cast<char *>(state));
+        }
+
+        SQLLEN row_count = -1;
+        SQLRowCount(stmt, &row_count);
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        /* -1 means "not applicable" (DDL, or driver doesn't report).
+         * Clamp to 0 so callers can distinguish error (-1 from the
+         * C API wrapper) from "no rows affected". */
+        return static_cast<int>(row_count < 0 ? 0 : row_count);
+    } catch (const nanodbc::database_error &e) {
+        g_errmsg = e.what();
+        return -1;
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return -1;
+    }
+}
+
 char *blobodbc_json_diff(const char *source_json, const char *target_json) {
     try {
         g_errmsg.clear();

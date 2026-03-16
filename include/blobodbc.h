@@ -145,6 +145,13 @@ char *blobodbc_query_json_in_catalog(const char *conn_str,
                                       const char *query);
 
 /*
+ * Execute a SQL statement that does not return a result set (DDL, DML).
+ * Returns the number of affected rows, or -1 on error.
+ * Call blobodbc_errmsg() for error details.
+ */
+int blobodbc_execute(const char *conn_str, const char *sql);
+
+/*
  * Produce an RFC 6902 JSON Patch from source to target.
  * The patch, when applied to source, yields target.
  */

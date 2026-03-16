@@ -596,6 +596,40 @@ static void odbc_query_in_catalog_func(duckdb_function_info info,
     }
 }
 
+/* ── odbc_execute(conn_str, sql) -> INTEGER (affected rows) ──────── */
+
+static void odbc_execute_func(duckdb_function_info info,
+                                duckdb_data_chunk input,
+                                duckdb_vector output) {
+    idx_t size = duckdb_data_chunk_get_size(input);
+    duckdb_vector vec0 = duckdb_data_chunk_get_vector(input, 0);
+    duckdb_vector vec1 = duckdb_data_chunk_get_vector(input, 1);
+    duckdb_string_t *data0 = (duckdb_string_t *)duckdb_vector_get_data(vec0);
+    duckdb_string_t *data1 = (duckdb_string_t *)duckdb_vector_get_data(vec1);
+    uint64_t *val0 = duckdb_vector_get_validity(vec0);
+    uint64_t *val1 = duckdb_vector_get_validity(vec1);
+    int32_t *result_data = (int32_t *)duckdb_vector_get_data(output);
+
+    for (idx_t row = 0; row < size; row++) {
+        if ((val0 && !duckdb_validity_row_is_valid(val0, row)) ||
+            (val1 && !duckdb_validity_row_is_valid(val1, row))) {
+            duckdb_vector_ensure_validity_writable(output);
+            duckdb_validity_set_row_invalid(duckdb_vector_get_validity(output), row);
+            continue;
+        }
+        char *conn = str_dup_z(&data0[row]);
+        char *sql  = str_dup_z(&data1[row]);
+        int rc = blobodbc_execute(conn, sql);
+        free(conn); free(sql);
+        if (rc >= 0) {
+            result_data[row] = rc;
+        } else {
+            duckdb_scalar_function_set_error(info, blobodbc_errmsg());
+            return;
+        }
+    }
+}
+
 /* ── json_diff(source, target) -> JSON Patch ─────────────────────── */
 
 static void json_diff_func(duckdb_function_info info,
@@ -889,6 +923,20 @@ static void register_functions(duckdb_connection connection) {
         duckdb_scalar_function_set_function(func, odbc_query_in_catalog_func);
         duckdb_register_scalar_function(connection, func);
         duckdb_destroy_scalar_function(&func);
+    }
+
+    /* odbc_execute(conn_str, sql) → INTEGER */
+    {
+        duckdb_logical_type int_type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
+        duckdb_scalar_function func = duckdb_create_scalar_function();
+        duckdb_scalar_function_set_name(func, "odbc_execute");
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_set_return_type(func, int_type);
+        duckdb_scalar_function_set_function(func, odbc_execute_func);
+        duckdb_register_scalar_function(connection, func);
+        duckdb_destroy_scalar_function(&func);
+        duckdb_destroy_logical_type(&int_type);
     }
 
     /* json_diff(source, target) → RFC 6902 JSON Patch */
