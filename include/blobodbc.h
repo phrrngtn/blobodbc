@@ -145,6 +145,25 @@ char *blobodbc_query_json_in_catalog(const char *conn_str,
                                       const char *query);
 
 /*
+ * Produce an RFC 6902 JSON Patch from source to target.
+ * The patch, when applied to source, yields target.
+ */
+char *blobodbc_json_diff(const char *source_json, const char *target_json);
+
+/*
+ * Apply an RFC 6902 JSON Patch to a document, returning the result.
+ */
+char *blobodbc_json_patch(const char *doc_json, const char *patch_json);
+
+/*
+ * Reshape a flat JSON array of objects into a nested object hierarchy.
+ *
+ * keys_json is a JSON array of field names to nest by, e.g. ["TABLE_SCHEM","TABLE_NAME","COLUMN_NAME"].
+ * Key fields are removed from leaf objects; remaining fields become the leaf value.
+ */
+char *blobodbc_json_nest(const char *data_json, const char *keys_json);
+
+/*
  * Free a string returned by blobodbc_* functions.
  */
 void blobodbc_free(char *s);

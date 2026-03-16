@@ -3,6 +3,9 @@
 #include <nanodbc/nanodbc.h>
 #include <nlohmann/json.hpp>
 
+#include <jsoncons/json.hpp>
+#include <jsoncons_ext/jsonpatch/jsonpatch.hpp>
+
 #include <sql.h>
 #include <sqlext.h>
 
@@ -852,6 +855,98 @@ static std::string build_driver_info(const char *conn_str) {
     return result.dump();
 }
 
+/* ── JSON operations (jsoncons) ──────────────────────────────────── */
+
+/*
+ * json_diff: produce an RFC 6902 JSON Patch from source to target.
+ * The patch, when applied to source, produces target.
+ */
+static std::string build_json_diff(const char *source_json, const char *target_json) {
+    auto source = jsoncons::json::parse(source_json);
+    auto target = jsoncons::json::parse(target_json);
+    auto patch = jsoncons::jsonpatch::from_diff(source, target);
+    return patch.to_string();
+}
+
+/*
+ * json_patch: apply an RFC 6902 JSON Patch to a document.
+ * Returns the patched document.
+ */
+static std::string build_json_patch(const char *doc_json, const char *patch_json) {
+    auto doc = jsoncons::json::parse(doc_json);
+    auto patch = jsoncons::json::parse(patch_json);
+    jsoncons::jsonpatch::apply_patch(doc, patch);
+    return doc.to_string();
+}
+
+/*
+ * json_nest: reshape a flat JSON array of objects into a nested
+ * object hierarchy keyed by the specified fields.
+ *
+ * Given:
+ *   data  = [{"a":"x","b":"y","c":"z","val":1}, ...]
+ *   keys  = ["a","b","c"]
+ *
+ * Produces:
+ *   {"x": {"y": {"z": {"val": 1}}}}
+ *
+ * The key fields are removed from the leaf objects.
+ * If only one non-key field remains, it is inlined as the leaf value.
+ */
+static std::string build_json_nest(const char *data_json, const char *keys_json) {
+    auto data = jsoncons::json::parse(data_json);
+    auto keys = jsoncons::json::parse(keys_json);
+
+    if (!data.is_array() || !keys.is_array())
+        throw std::runtime_error("json_nest: data must be array, keys must be array of strings");
+
+    std::vector<std::string> key_names;
+    for (const auto &k : keys.array_range()) {
+        key_names.push_back(k.as<std::string>());
+    }
+
+    if (key_names.empty())
+        throw std::runtime_error("json_nest: keys array must not be empty");
+
+    jsoncons::json result(jsoncons::json_object_arg);
+
+    for (const auto &row : data.array_range()) {
+        if (!row.is_object()) continue;
+
+        /* Navigate/create the nesting hierarchy */
+        jsoncons::json *node = &result;
+        for (size_t i = 0; i < key_names.size(); i++) {
+            const auto &key = key_names[i];
+            if (!row.contains(key)) break;
+            std::string key_val = row[key].as<std::string>();
+
+            if (i == key_names.size() - 1) {
+                /* Leaf level: store remaining fields as the value */
+                jsoncons::json leaf(jsoncons::json_object_arg);
+                for (const auto &member : row.object_range()) {
+                    bool is_key = false;
+                    for (const auto &kn : key_names) {
+                        if (member.key() == kn) { is_key = true; break; }
+                    }
+                    if (!is_key) {
+                        leaf.insert_or_assign(member.key(), member.value());
+                    }
+                }
+                node->insert_or_assign(key_val, std::move(leaf));
+            } else {
+                /* Intermediate level: ensure sub-object exists */
+                if (!node->contains(key_val)) {
+                    node->insert_or_assign(key_val, jsoncons::json(jsoncons::json_object_arg));
+                }
+                node = &((*node)[key_val]);
+            }
+        }
+    }
+
+    /* jsoncons default object iteration is insertion-order */
+    return result.to_string();
+}
+
 /* ── C API ───────────────────────────────────────────────────────── */
 
 extern "C" {
@@ -978,6 +1073,36 @@ char *blobodbc_query_json_in_catalog(const char *conn_str,
     } catch (const nanodbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    }
+}
+
+char *blobodbc_json_diff(const char *source_json, const char *target_json) {
+    try {
+        g_errmsg.clear();
+        return strdup_result(build_json_diff(source_json, target_json));
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    }
+}
+
+char *blobodbc_json_patch(const char *doc_json, const char *patch_json) {
+    try {
+        g_errmsg.clear();
+        return strdup_result(build_json_patch(doc_json, patch_json));
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    }
+}
+
+char *blobodbc_json_nest(const char *data_json, const char *keys_json) {
+    try {
+        g_errmsg.clear();
+        return strdup_result(build_json_nest(data_json, keys_json));
     } catch (const std::exception &e) {
         g_errmsg = e.what();
         return nullptr;
