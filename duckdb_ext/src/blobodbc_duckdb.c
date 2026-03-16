@@ -16,8 +16,13 @@
 
 #include "blobodbc.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Embedded catalog query data (generated at build time from catalog YAML files) */
+extern const unsigned char blobodbc_catalog_json[];
+extern const unsigned int blobodbc_catalog_json_len;
 
 DUCKDB_EXTENSION_EXTERN
 
@@ -1154,11 +1159,60 @@ static void register_functions(duckdb_connection connection) {
     duckdb_destroy_logical_type(&varchar_type);
 }
 
+/* ── Populate catalog_queries table ──────────────────────────────── */
+
+static void populate_catalog_queries(duckdb_connection connection) {
+    duckdb_state state;
+    duckdb_result result;
+
+    /* Create schema and table if they don't exist */
+    state = duckdb_query(connection,
+        "CREATE SCHEMA IF NOT EXISTS blobodbc", &result);
+    duckdb_destroy_result(&result);
+    if (state == DuckDBError) return;
+
+    state = duckdb_query(connection,
+        "CREATE TABLE IF NOT EXISTS blobodbc.catalog_queries ("
+        "  dialect VARCHAR NOT NULL,"
+        "  name VARCHAR NOT NULL,"
+        "  description VARCHAR,"
+        "  sql VARCHAR NOT NULL,"
+        "  parameters JSON,"
+        "  where_fragments JSON,"
+        "  PRIMARY KEY (dialect, name)"
+        ")", &result);
+    duckdb_destroy_result(&result);
+    if (state == DuckDBError) return;
+
+    /* Insert the embedded JSON blob as a single value, then
+     * unnest it into rows.  This is a single SQL round-trip
+     * rather than N prepared-statement executions. */
+    duckdb_prepared_statement stmt;
+    state = duckdb_prepare(connection,
+        "INSERT OR REPLACE INTO blobodbc.catalog_queries "
+        "SELECT "
+        "  e->>'dialect' AS dialect,"
+        "  e->>'name' AS name,"
+        "  e->>'description' AS description,"
+        "  e->>'sql' AS sql,"
+        "  e->'parameters' AS parameters,"
+        "  e->'where_fragments' AS where_fragments "
+        "FROM (SELECT unnest(from_json($1::JSON, '[\"json\"]')) AS e)",
+        &stmt);
+    if (state == DuckDBError) return;
+
+    duckdb_bind_varchar(stmt, 1, (const char *)blobodbc_catalog_json);
+    state = duckdb_execute_prepared(stmt, &result);
+    duckdb_destroy_result(&result);
+    duckdb_destroy_prepare(&stmt);
+}
+
 /* ── Extension entrypoint ────────────────────────────────────────── */
 
 DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection,
                              duckdb_extension_info info,
                              struct duckdb_extension_access *access) {
     register_functions(connection);
+    populate_catalog_queries(connection);
     return true;
 }

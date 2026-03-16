@@ -64,10 +64,23 @@ FetchContent_Populate(duckdb_capi)
 set(DUCKDB_CAPI_INCLUDE "${duckdb_capi_SOURCE_DIR}/duckdb_capi")
 
 # ── DuckDB extension ────────────────────────────────────────────
+# ── Generate embedded catalog query data ───────────────────────
+find_program(PYTHON_EXE NAMES python3 python REQUIRED)
+set(CATALOG_DATA_C "${CMAKE_BINARY_DIR}/generated/catalog_queries_data.c")
+file(GLOB_RECURSE CATALOG_YMLS "${CMAKE_SOURCE_DIR}/catalog/*.yml")
+add_custom_command(
+  OUTPUT ${CATALOG_DATA_C}
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/generated"
+  COMMAND env "PATH=$ENV{PATH}" uv run --with pyyaml
+    "${CMAKE_SOURCE_DIR}/catalog/embed_catalog.py"
+    "${CMAKE_SOURCE_DIR}/catalog" "${CATALOG_DATA_C}"
+  DEPENDS ${CATALOG_YMLS} "${CMAKE_SOURCE_DIR}/catalog/embed_catalog.py"
+  COMMENT "Embedding catalog queries → catalog_queries_data.c")
+
 option(BUILD_DUCKDB_EXTENSION "Build DuckDB loadable extension" OFF)
 if(BUILD_DUCKDB_EXTENSION)
   add_library(blobodbc_duckdb MODULE
-    duckdb_ext/src/blobodbc_duckdb.c ${BO_SOURCES})
+    duckdb_ext/src/blobodbc_duckdb.c ${BO_SOURCES} ${CATALOG_DATA_C})
   target_include_directories(blobodbc_duckdb PRIVATE
     ${BO_INCLUDES} ${DUCKDB_CAPI_INCLUDE})
   target_link_libraries(blobodbc_duckdb PRIVATE ${BO_LIBS})
