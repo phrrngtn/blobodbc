@@ -70,7 +70,82 @@ char *blobodbc_query_clob_named(const char *conn_str, const char *query,
                                  const char *bind_json);
 
 /*
- * Free a string returned by blobodbc_query_*.
+ * Return ODBC driver metadata as a JSON object.
+ *
+ * Connects to the data source and collects:
+ *   - "get_info":  SQLGetInfo values (driver name/version, DBMS identity,
+ *                  SQL conformance, feature bitmasks, limits, keywords, etc.)
+ *   - "type_info": SQLGetTypeInfo result set (supported data types)
+ *
+ * conn_str:  ODBC connection string or DSN name
+ *
+ * Returns a malloc'd JSON string on success (caller must free with blobodbc_free).
+ * Returns NULL on error; call blobodbc_errmsg() for details.
+ */
+char *blobodbc_driver_info(const char *conn_str);
+
+/*
+ * Return tables visible via SQLTables as a JSON array of objects.
+ *
+ * Each object contains: TABLE_CAT, TABLE_SCHEM, TABLE_NAME, TABLE_TYPE,
+ * REMARKS (as returned by the driver).
+ *
+ * All filter parameters accept NULL for "no restriction" (return all).
+ * Non-NULL values are treated as SQL pattern match arguments.
+ *
+ * catalog: catalog/database pattern, or NULL for all
+ * schema:  schema pattern (e.g. "dbo"), or NULL for all
+ * type:    comma-separated table types (e.g. "TABLE,VIEW"), or NULL for all
+ *
+ * Returns a malloc'd JSON string on success (caller must free with blobodbc_free).
+ * Returns NULL on error; call blobodbc_errmsg() for details.
+ */
+char *blobodbc_tables(const char *conn_str,
+                      const char *catalog,
+                      const char *schema,
+                      const char *type);
+
+/*
+ * Return columns via SQLColumns as a JSON array of objects.
+ *
+ * Each object contains the standard SQLColumns result set columns:
+ * TABLE_CAT, TABLE_SCHEM, TABLE_NAME, COLUMN_NAME, DATA_TYPE,
+ * TYPE_NAME, COLUMN_SIZE, NULLABLE, REMARKS, COLUMN_DEF, ORDINAL_POSITION, etc.
+ *
+ * All filter parameters accept NULL for "no restriction" (return all).
+ * Non-NULL values are treated as SQL pattern match arguments.
+ *
+ * catalog: catalog/database pattern, or NULL for current
+ * schema:  schema name pattern, or NULL for all schemas
+ * table:   table name pattern, or NULL for all tables
+ *
+ * Returns a malloc'd JSON string on success (caller must free with blobodbc_free).
+ * Returns NULL on error; call blobodbc_errmsg() for details.
+ */
+char *blobodbc_columns(const char *conn_str,
+                       const char *catalog,
+                       const char *schema,
+                       const char *table);
+
+/*
+ * Execute a query after switching to a specific catalog (database).
+ *
+ * Sets SQL_ATTR_CURRENT_CATALOG to the given catalog before executing,
+ * and restores the original catalog afterward. Safe with connection pooling.
+ *
+ * conn_str:  ODBC connection string or DSN name
+ * catalog:   target database/catalog name
+ * query:     SQL query to execute
+ *
+ * Returns a malloc'd JSON string on success (caller must free with blobodbc_free).
+ * Returns NULL on error; call blobodbc_errmsg() for details.
+ */
+char *blobodbc_query_json_in_catalog(const char *conn_str,
+                                      const char *catalog,
+                                      const char *query);
+
+/*
+ * Free a string returned by blobodbc_* functions.
  */
 void blobodbc_free(char *s);
 

@@ -3,6 +3,9 @@
 #include <nanodbc/nanodbc.h>
 #include <nlohmann/json.hpp>
 
+#include <sql.h>
+#include <sqlext.h>
+
 #include <cstring>
 #include <string>
 #include <vector>
@@ -252,6 +255,603 @@ static nanodbc::result execute_named(const char *conn_str, const char *query,
     return nanodbc::execute(stmt);
 }
 
+/* ── Driver metadata (SQLGetInfo + SQLGetTypeInfo) ───────────────── */
+
+struct InfoEntry {
+    SQLUSMALLINT type_id;
+    const char  *name;
+    char         category;   /* 's' = string, 'i' = SQLUINTEGER, 'h' = SQLUSMALLINT */
+};
+
+static const InfoEntry g_info_catalog[] = {
+    /* Driver / DBMS identification */
+    {SQL_DATA_SOURCE_NAME,         "SQL_DATA_SOURCE_NAME",        's'},
+    {SQL_DRIVER_NAME,              "SQL_DRIVER_NAME",             's'},
+    {SQL_DRIVER_VER,               "SQL_DRIVER_VER",              's'},
+    {SQL_DRIVER_ODBC_VER,          "SQL_DRIVER_ODBC_VER",         's'},
+    {SQL_DBMS_NAME,                "SQL_DBMS_NAME",               's'},
+    {SQL_DBMS_VER,                 "SQL_DBMS_VER",                's'},
+    {SQL_DATABASE_NAME,            "SQL_DATABASE_NAME",           's'},
+    {SQL_SERVER_NAME,              "SQL_SERVER_NAME",             's'},
+    {SQL_USER_NAME,                "SQL_USER_NAME",               's'},
+
+    /* Catalog / schema / naming */
+    {SQL_CATALOG_NAME_SEPARATOR,   "SQL_CATALOG_NAME_SEPARATOR",  's'},
+    {SQL_CATALOG_TERM,             "SQL_CATALOG_TERM",            's'},
+    {SQL_SCHEMA_TERM,              "SQL_SCHEMA_TERM",             's'},
+    {SQL_TABLE_TERM,               "SQL_TABLE_TERM",              's'},
+    {SQL_PROCEDURE_TERM,           "SQL_PROCEDURE_TERM",          's'},
+    {SQL_IDENTIFIER_QUOTE_CHAR,    "SQL_IDENTIFIER_QUOTE_CHAR",   's'},
+    {SQL_SEARCH_PATTERN_ESCAPE,    "SQL_SEARCH_PATTERN_ESCAPE",   's'},
+    {SQL_CATALOG_LOCATION,         "SQL_CATALOG_LOCATION",        'h'},
+    {SQL_CATALOG_USAGE,            "SQL_CATALOG_USAGE",           'i'},
+    {SQL_SCHEMA_USAGE,             "SQL_SCHEMA_USAGE",            'i'},
+
+    /* Identifier case handling */
+    {SQL_IDENTIFIER_CASE,          "SQL_IDENTIFIER_CASE",         'h'},
+    {SQL_QUOTED_IDENTIFIER_CASE,   "SQL_QUOTED_IDENTIFIER_CASE",  'h'},
+
+    /* NULL handling */
+    {SQL_NULL_COLLATION,           "SQL_NULL_COLLATION",          'h'},
+    {SQL_CONCAT_NULL_BEHAVIOR,     "SQL_CONCAT_NULL_BEHAVIOR",    'h'},
+    {SQL_NON_NULLABLE_COLUMNS,     "SQL_NON_NULLABLE_COLUMNS",    'h'},
+
+    /* SQL conformance */
+    {SQL_ODBC_INTERFACE_CONFORMANCE, "SQL_ODBC_INTERFACE_CONFORMANCE", 'i'},
+    {SQL_INTEGRITY,                "SQL_INTEGRITY",               's'},
+
+    /* SQL feature bitmasks */
+    {SQL_ALTER_TABLE,              "SQL_ALTER_TABLE",              'i'},
+    {SQL_CREATE_TABLE,             "SQL_CREATE_TABLE",            'i'},
+    {SQL_CREATE_VIEW,              "SQL_CREATE_VIEW",             'i'},
+    {SQL_DROP_TABLE,               "SQL_DROP_TABLE",              'i'},
+    {SQL_DROP_VIEW,                "SQL_DROP_VIEW",               'i'},
+    {SQL_INSERT_STATEMENT,         "SQL_INSERT_STATEMENT",        'i'},
+    {SQL_SUBQUERIES,               "SQL_SUBQUERIES",              'i'},
+    {SQL_UNION,                    "SQL_UNION_STATEMENT",         'i'},
+    {SQL_GROUP_BY,                 "SQL_GROUP_BY",                'h'},
+    {SQL_ORDER_BY_COLUMNS_IN_SELECT, "SQL_ORDER_BY_COLUMNS_IN_SELECT", 's'},
+    {SQL_CORRELATION_NAME,         "SQL_CORRELATION_NAME",        'h'},
+    {SQL_OJ_CAPABILITIES,          "SQL_OJ_CAPABILITIES",         'i'},
+
+    /* Scalar function bitmasks */
+    {SQL_STRING_FUNCTIONS,         "SQL_STRING_FUNCTIONS",        'i'},
+    {SQL_NUMERIC_FUNCTIONS,        "SQL_NUMERIC_FUNCTIONS",       'i'},
+    {SQL_TIMEDATE_FUNCTIONS,       "SQL_TIMEDATE_FUNCTIONS",      'i'},
+    {SQL_SYSTEM_FUNCTIONS,         "SQL_SYSTEM_FUNCTIONS",        'i'},
+    {SQL_CONVERT_FUNCTIONS,        "SQL_CONVERT_FUNCTIONS",       'i'},
+    {SQL_AGGREGATE_FUNCTIONS,      "SQL_AGGREGATE_FUNCTIONS",     'i'},
+
+    /* SQL92 feature bitmasks */
+    {SQL_SQL92_PREDICATES,                "SQL_SQL92_PREDICATES",                'i'},
+    {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, "SQL_SQL92_RELATIONAL_JOIN_OPERATORS", 'i'},
+    {SQL_SQL92_VALUE_EXPRESSIONS,         "SQL_SQL92_VALUE_EXPRESSIONS",         'i'},
+    {SQL_SQL92_STRING_FUNCTIONS,          "SQL_SQL92_STRING_FUNCTIONS",          'i'},
+    {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS,   "SQL_SQL92_NUMERIC_VALUE_FUNCTIONS",   'i'},
+    {SQL_SQL92_DATETIME_FUNCTIONS,        "SQL_SQL92_DATETIME_FUNCTIONS",        'i'},
+
+    /* Transaction support */
+    {SQL_TXN_CAPABLE,              "SQL_TXN_CAPABLE",             'h'},
+    {SQL_DEFAULT_TXN_ISOLATION,    "SQL_DEFAULT_TXN_ISOLATION",   'i'},
+    {SQL_CURSOR_COMMIT_BEHAVIOR,   "SQL_CURSOR_COMMIT_BEHAVIOR",  'h'},
+    {SQL_CURSOR_ROLLBACK_BEHAVIOR, "SQL_CURSOR_ROLLBACK_BEHAVIOR",'h'},
+
+    /* Limits */
+    {SQL_MAX_CATALOG_NAME_LEN,     "SQL_MAX_CATALOG_NAME_LEN",    'h'},
+    {SQL_MAX_COLUMN_NAME_LEN,      "SQL_MAX_COLUMN_NAME_LEN",     'h'},
+    {SQL_MAX_COLUMNS_IN_GROUP_BY,  "SQL_MAX_COLUMNS_IN_GROUP_BY", 'h'},
+    {SQL_MAX_COLUMNS_IN_ORDER_BY,  "SQL_MAX_COLUMNS_IN_ORDER_BY", 'h'},
+    {SQL_MAX_COLUMNS_IN_SELECT,    "SQL_MAX_COLUMNS_IN_SELECT",   'h'},
+    {SQL_MAX_CURSOR_NAME_LEN,      "SQL_MAX_CURSOR_NAME_LEN",     'h'},
+    {SQL_MAX_IDENTIFIER_LEN,       "SQL_MAX_IDENTIFIER_LEN",      'h'},
+    {SQL_MAX_PROCEDURE_NAME_LEN,   "SQL_MAX_PROCEDURE_NAME_LEN",  'h'},
+    {SQL_MAX_SCHEMA_NAME_LEN,      "SQL_MAX_SCHEMA_NAME_LEN",     'h'},
+    {SQL_MAX_TABLE_NAME_LEN,       "SQL_MAX_TABLE_NAME_LEN",      'h'},
+    {SQL_MAX_STATEMENT_LEN,        "SQL_MAX_STATEMENT_LEN",       'i'},
+    {SQL_MAX_TABLES_IN_SELECT,     "SQL_MAX_TABLES_IN_SELECT",    'h'},
+    {SQL_MAX_USER_NAME_LEN,        "SQL_MAX_USER_NAME_LEN",       'h'},
+    {SQL_MAX_ROW_SIZE,             "SQL_MAX_ROW_SIZE",            'i'},
+
+    /* Keywords */
+    {SQL_KEYWORDS,                 "SQL_KEYWORDS",                's'},
+};
+
+static nlohmann::ordered_json collect_get_info(SQLHDBC dbc) {
+    nlohmann::ordered_json info;
+
+    for (const auto &entry : g_info_catalog) {
+        switch (entry.category) {
+        case 's': {
+            SQLCHAR buf[4096];
+            SQLSMALLINT len = 0;
+            SQLRETURN rc = SQLGetInfo(dbc, entry.type_id, buf, sizeof(buf), &len);
+            if (SQL_SUCCEEDED(rc)) {
+                info[entry.name] = std::string(reinterpret_cast<char *>(buf), len);
+            } else {
+                info[entry.name] = nullptr;
+            }
+            break;
+        }
+        case 'i': {
+            SQLUINTEGER val = 0;
+            SQLRETURN rc = SQLGetInfo(dbc, entry.type_id, &val, sizeof(val), nullptr);
+            if (SQL_SUCCEEDED(rc)) {
+                info[entry.name] = static_cast<unsigned long>(val);
+            } else {
+                info[entry.name] = nullptr;
+            }
+            break;
+        }
+        case 'h': {
+            SQLUSMALLINT val = 0;
+            SQLRETURN rc = SQLGetInfo(dbc, entry.type_id, &val, sizeof(val), nullptr);
+            if (SQL_SUCCEEDED(rc)) {
+                info[entry.name] = static_cast<int>(val);
+            } else {
+                info[entry.name] = nullptr;
+            }
+            break;
+        }
+        }
+    }
+
+    return info;
+}
+
+static nlohmann::ordered_json collect_type_info(SQLHDBC dbc) {
+    nlohmann::ordered_json types = nlohmann::ordered_json::array();
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt);
+    if (!SQL_SUCCEEDED(rc))
+        return types;
+
+    rc = SQLGetTypeInfo(stmt, SQL_ALL_TYPES);
+    if (!SQL_SUCCEEDED(rc)) {
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        return types;
+    }
+
+    /* Discover result columns */
+    SQLSMALLINT ncols = 0;
+    SQLNumResultCols(stmt, &ncols);
+
+    struct ColMeta {
+        std::string name;
+        SQLSMALLINT sql_type;
+    };
+    std::vector<ColMeta> cols(ncols);
+    for (SQLSMALLINT i = 0; i < ncols; i++) {
+        SQLCHAR colname[256];
+        SQLSMALLINT namelen = 0, datatype = 0, nullable = 0, decdigits = 0;
+        SQLULEN colsize = 0;
+        SQLDescribeCol(stmt, i + 1, colname, sizeof(colname), &namelen,
+                       &datatype, &colsize, &decdigits, &nullable);
+        cols[i].name = std::string(reinterpret_cast<char *>(colname), namelen);
+        cols[i].sql_type = datatype;
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        nlohmann::ordered_json row;
+        for (SQLSMALLINT i = 0; i < ncols; i++) {
+            SQLLEN indicator = 0;
+            SQLCHAR buf[1024];
+            rc = SQLGetData(stmt, i + 1, SQL_C_CHAR, buf, sizeof(buf), &indicator);
+
+            if (!SQL_SUCCEEDED(rc) || indicator == SQL_NULL_DATA) {
+                row[cols[i].name] = nullptr;
+                continue;
+            }
+
+            std::string sval(reinterpret_cast<char *>(buf));
+
+            /* Try to return numbers as numbers */
+            switch (cols[i].sql_type) {
+            case SQL_SMALLINT:
+            case SQL_INTEGER:
+            case SQL_TINYINT:
+            case SQL_BIGINT:
+                try { row[cols[i].name] = std::stoll(sval); } catch (...) { row[cols[i].name] = sval; }
+                break;
+            default:
+                row[cols[i].name] = sval;
+                break;
+            }
+        }
+        types.push_back(std::move(row));
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    return types;
+}
+
+/* ── SQLGetFunctions ─────────────────────────────────────────────── */
+
+struct FuncEntry {
+    SQLUSMALLINT id;
+    const char  *name;
+};
+
+static const FuncEntry g_func_catalog[] = {
+    /* ODBC Core functions */
+    {SQL_API_SQLALLOCHANDLE,        "SQLAllocHandle"},
+    {SQL_API_SQLBINDCOL,            "SQLBindCol"},
+    {SQL_API_SQLBINDPARAMETER,      "SQLBindParameter"},
+    {SQL_API_SQLBROWSECONNECT,      "SQLBrowseConnect"},
+    {SQL_API_SQLBULKOPERATIONS,     "SQLBulkOperations"},
+    {SQL_API_SQLCANCEL,             "SQLCancel"},
+    {SQL_API_SQLCLOSECURSOR,        "SQLCloseCursor"},
+    {SQL_API_SQLCOLATTRIBUTE,       "SQLColAttribute"},
+    {SQL_API_SQLCOLUMNS,            "SQLColumns"},
+    {SQL_API_SQLCONNECT,            "SQLConnect"},
+    {SQL_API_SQLCOPYDESC,           "SQLCopyDesc"},
+    {SQL_API_SQLDESCRIBECOL,        "SQLDescribeCol"},
+    {SQL_API_SQLDESCRIBEPARAM,      "SQLDescribeParam"},
+    {SQL_API_SQLDISCONNECT,         "SQLDisconnect"},
+    {SQL_API_SQLDRIVERCONNECT,      "SQLDriverConnect"},
+    {SQL_API_SQLENDTRAN,            "SQLEndTran"},
+    {SQL_API_SQLEXECDIRECT,         "SQLExecDirect"},
+    {SQL_API_SQLEXECUTE,            "SQLExecute"},
+    {SQL_API_SQLEXTENDEDFETCH,      "SQLExtendedFetch"},
+    {SQL_API_SQLFETCH,              "SQLFetch"},
+    {SQL_API_SQLFETCHSCROLL,        "SQLFetchScroll"},
+    {SQL_API_SQLFOREIGNKEYS,        "SQLForeignKeys"},
+    {SQL_API_SQLFREEHANDLE,         "SQLFreeHandle"},
+    {SQL_API_SQLFREESTMT,           "SQLFreeStmt"},
+    {SQL_API_SQLGETCONNECTATTR,     "SQLGetConnectAttr"},
+    {SQL_API_SQLGETCURSORNAME,      "SQLGetCursorName"},
+    {SQL_API_SQLGETDATA,            "SQLGetData"},
+    {SQL_API_SQLGETDESCFIELD,       "SQLGetDescField"},
+    {SQL_API_SQLGETDESCREC,         "SQLGetDescRec"},
+    {SQL_API_SQLGETDIAGFIELD,       "SQLGetDiagField"},
+    {SQL_API_SQLGETDIAGREC,         "SQLGetDiagRec"},
+    {SQL_API_SQLGETENVATTR,         "SQLGetEnvAttr"},
+    {SQL_API_SQLGETFUNCTIONS,       "SQLGetFunctions"},
+    {SQL_API_SQLGETINFO,            "SQLGetInfo"},
+    {SQL_API_SQLGETSTMTATTR,        "SQLGetStmtAttr"},
+    {SQL_API_SQLGETTYPEINFO,        "SQLGetTypeInfo"},
+    {SQL_API_SQLMORERESULTS,        "SQLMoreResults"},
+    {SQL_API_SQLNATIVESQL,          "SQLNativeSQL"},
+    {SQL_API_SQLNUMPARAMS,          "SQLNumParams"},
+    {SQL_API_SQLNUMRESULTCOLS,      "SQLNumResultCols"},
+    {SQL_API_SQLPARAMDATA,          "SQLParamData"},
+    {SQL_API_SQLPREPARE,            "SQLPrepare"},
+    {SQL_API_SQLPRIMARYKEYS,        "SQLPrimaryKeys"},
+    {SQL_API_SQLPROCEDURECOLUMNS,   "SQLProcedureColumns"},
+    {SQL_API_SQLPROCEDURES,         "SQLProcedures"},
+    {SQL_API_SQLPUTDATA,            "SQLPutData"},
+    {SQL_API_SQLROWCOUNT,           "SQLRowCount"},
+    {SQL_API_SQLSETCONNECTATTR,     "SQLSetConnectAttr"},
+    {SQL_API_SQLSETCURSORNAME,      "SQLSetCursorName"},
+    {SQL_API_SQLSETDESCFIELD,       "SQLSetDescField"},
+    {SQL_API_SQLSETDESCREC,         "SQLSetDescRec"},
+    {SQL_API_SQLSETENVATTR,         "SQLSetEnvAttr"},
+    {SQL_API_SQLSETPOS,             "SQLSetPos"},
+    {SQL_API_SQLSETSTMTATTR,        "SQLSetStmtAttr"},
+    {SQL_API_SQLSPECIALCOLUMNS,     "SQLSpecialColumns"},
+    {SQL_API_SQLSTATISTICS,         "SQLStatistics"},
+    {SQL_API_SQLTABLEPRIVILEGES,    "SQLTablePrivileges"},
+    {SQL_API_SQLTABLES,             "SQLTables"},
+    {SQL_API_SQLCOLUMNPRIVILEGES,   "SQLColumnPrivileges"},
+};
+
+static nlohmann::ordered_json collect_functions(SQLHDBC dbc) {
+    nlohmann::ordered_json funcs;
+
+    for (const auto &entry : g_func_catalog) {
+        SQLUSMALLINT supported = SQL_FALSE;
+        SQLRETURN rc = SQLGetFunctions(dbc, entry.id, &supported);
+        if (SQL_SUCCEEDED(rc)) {
+            funcs[entry.name] = (supported == SQL_TRUE);
+        } else {
+            funcs[entry.name] = nullptr;
+        }
+    }
+
+    return funcs;
+}
+
+/* ── SQLDrivers (environment-level) ─────────────────────────────── */
+
+static nlohmann::ordered_json collect_drivers(SQLHENV env) {
+    nlohmann::ordered_json drivers = nlohmann::ordered_json::array();
+
+    SQLCHAR  name[256];
+    SQLCHAR  attrs[4096];
+    SQLSMALLINT name_len = 0, attrs_len = 0;
+
+    SQLUSMALLINT direction = SQL_FETCH_FIRST;
+    while (true) {
+        SQLRETURN rc = SQLDrivers(env, direction,
+                                   name, sizeof(name), &name_len,
+                                   attrs, sizeof(attrs), &attrs_len);
+        if (!SQL_SUCCEEDED(rc))
+            break;
+
+        nlohmann::ordered_json drv;
+        drv["name"] = std::string(reinterpret_cast<char *>(name), name_len);
+
+        /* Attributes are key=value pairs separated by NUL bytes */
+        nlohmann::ordered_json attr_obj;
+        const char *p = reinterpret_cast<char *>(attrs);
+        const char *end = p + attrs_len;
+        while (p < end && *p) {
+            std::string kv(p);
+            p += kv.size() + 1;
+            auto eq = kv.find('=');
+            if (eq != std::string::npos) {
+                attr_obj[kv.substr(0, eq)] = kv.substr(eq + 1);
+            }
+        }
+        drv["attributes"] = attr_obj;
+        drivers.push_back(std::move(drv));
+
+        direction = SQL_FETCH_NEXT;
+    }
+
+    return drivers;
+}
+
+/* ── SQLTables enumeration (catalogs, schemas, table types) ──────── */
+
+/*
+ * Helper: call SQLTables in one of its special enumeration modes and
+ * collect column 1 from the result set as a JSON array of strings.
+ *
+ * The ODBC spec defines three special invocations of SQLTables:
+ *   - catalog = SQL_ALL_CATALOGS, schema = "", table = ""  → list catalogs
+ *   - catalog = "", schema = SQL_ALL_SCHEMAS, table = ""   → list schemas
+ *   - catalog = "", schema = "", table = "", type = SQL_ALL_TABLE_TYPES → list table types
+ */
+static nlohmann::ordered_json sqltables_enumerate(
+        SQLHDBC dbc,
+        const char *catalog,
+        const char *schema,
+        const char *table,
+        const char *type) {
+    nlohmann::ordered_json items = nlohmann::ordered_json::array();
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt);
+    if (!SQL_SUCCEEDED(rc))
+        return items;
+
+    rc = SQLTables(stmt,
+                   (SQLCHAR *)catalog, SQL_NTS,
+                   (SQLCHAR *)schema,  SQL_NTS,
+                   (SQLCHAR *)table,   SQL_NTS,
+                   (SQLCHAR *)type,    SQL_NTS);
+    if (!SQL_SUCCEEDED(rc)) {
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        return items;
+    }
+
+    /* For catalog/schema/type enumeration, the interesting value is
+     * in different columns depending on the mode. Rather than hardcode
+     * column indices, return all non-empty columns from each row as
+     * an object — this handles driver quirks gracefully. */
+    SQLSMALLINT ncols = 0;
+    SQLNumResultCols(stmt, &ncols);
+
+    std::vector<std::string> col_names(ncols);
+    for (SQLSMALLINT i = 0; i < ncols; i++) {
+        SQLCHAR colname[256];
+        SQLSMALLINT namelen = 0, datatype = 0, nullable = 0, decdigits = 0;
+        SQLULEN colsize = 0;
+        SQLDescribeCol(stmt, i + 1, colname, sizeof(colname), &namelen,
+                       &datatype, &colsize, &decdigits, &nullable);
+        col_names[i] = std::string(reinterpret_cast<char *>(colname), namelen);
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        nlohmann::ordered_json row;
+        for (SQLSMALLINT i = 0; i < ncols; i++) {
+            SQLLEN indicator = 0;
+            SQLCHAR buf[1024];
+            rc = SQLGetData(stmt, i + 1, SQL_C_CHAR, buf, sizeof(buf), &indicator);
+            if (SQL_SUCCEEDED(rc) && indicator != SQL_NULL_DATA) {
+                std::string val(reinterpret_cast<char *>(buf));
+                if (!val.empty()) {
+                    row[col_names[i]] = val;
+                }
+            }
+        }
+        if (!row.empty()) {
+            items.push_back(std::move(row));
+        }
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    return items;
+}
+
+static nlohmann::ordered_json collect_catalogs(SQLHDBC dbc) {
+    return sqltables_enumerate(dbc, "%", "", "", "");
+}
+
+static nlohmann::ordered_json collect_schemas(SQLHDBC dbc) {
+    return sqltables_enumerate(dbc, "", "%", "", "");
+}
+
+static nlohmann::ordered_json collect_table_types(SQLHDBC dbc) {
+    return sqltables_enumerate(dbc, "", "", "", "%");
+}
+
+/* ── Generic SQLColumns / SQLTables result-set serialiser ────────── */
+
+/*
+ * Fetch a complete ODBC result set as a JSON array of objects.
+ * Used for SQLTables and SQLColumns result sets where we want every
+ * column the driver returns, with numbers as numbers.
+ */
+static nlohmann::ordered_json stmt_result_to_json(SQLHSTMT stmt) {
+    nlohmann::ordered_json rows = nlohmann::ordered_json::array();
+
+    SQLSMALLINT ncols = 0;
+    SQLNumResultCols(stmt, &ncols);
+
+    struct ColMeta {
+        std::string name;
+        SQLSMALLINT sql_type;
+    };
+    std::vector<ColMeta> cols(ncols);
+    for (SQLSMALLINT i = 0; i < ncols; i++) {
+        SQLCHAR colname[256];
+        SQLSMALLINT namelen = 0, datatype = 0, nullable = 0, decdigits = 0;
+        SQLULEN colsize = 0;
+        SQLDescribeCol(stmt, i + 1, colname, sizeof(colname), &namelen,
+                       &datatype, &colsize, &decdigits, &nullable);
+        cols[i].name = std::string(reinterpret_cast<char *>(colname), namelen);
+        cols[i].sql_type = datatype;
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        nlohmann::ordered_json row;
+        for (SQLSMALLINT i = 0; i < ncols; i++) {
+            SQLLEN indicator = 0;
+            SQLCHAR buf[4096];
+            SQLRETURN rc = SQLGetData(stmt, i + 1, SQL_C_CHAR,
+                                      buf, sizeof(buf), &indicator);
+            if (!SQL_SUCCEEDED(rc) || indicator == SQL_NULL_DATA) {
+                row[cols[i].name] = nullptr;
+                continue;
+            }
+            std::string sval(reinterpret_cast<char *>(buf));
+            switch (cols[i].sql_type) {
+            case SQL_SMALLINT:
+            case SQL_INTEGER:
+            case SQL_TINYINT:
+            case SQL_BIGINT:
+                try { row[cols[i].name] = std::stoll(sval); }
+                catch (...) { row[cols[i].name] = sval; }
+                break;
+            default:
+                row[cols[i].name] = sval;
+                break;
+            }
+        }
+        rows.push_back(std::move(row));
+    }
+
+    return rows;
+}
+
+static std::string build_tables(const char *conn_str,
+                                 const char *catalog,
+                                 const char *schema,
+                                 const char *type) {
+    nanodbc::connection conn(conn_str);
+    SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt);
+    if (!SQL_SUCCEEDED(rc))
+        throw std::runtime_error("SQLAllocHandle failed for SQLTables");
+
+    /* NULL pointer + 0 length = no restriction (match all).
+     * Non-NULL pointer + SQL_NTS = pattern match on that value. */
+    rc = SQLTables(stmt,
+                   catalog ? (SQLCHAR *)catalog : nullptr,
+                   catalog ? SQL_NTS : 0,
+                   schema ? (SQLCHAR *)schema : nullptr,
+                   schema ? SQL_NTS : 0,
+                   nullptr, 0,                  /* table name: all */
+                   type ? (SQLCHAR *)type : nullptr,
+                   type ? SQL_NTS : 0);
+    if (!SQL_SUCCEEDED(rc)) {
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        throw std::runtime_error("SQLTables failed");
+    }
+
+    auto result = stmt_result_to_json(stmt);
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    return result.dump();
+}
+
+static std::string build_columns(const char *conn_str,
+                                  const char *catalog,
+                                  const char *schema,
+                                  const char *table) {
+    nanodbc::connection conn(conn_str);
+    SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt);
+    if (!SQL_SUCCEEDED(rc))
+        throw std::runtime_error("SQLAllocHandle failed for SQLColumns");
+
+    rc = SQLColumns(stmt,
+                    catalog ? (SQLCHAR *)catalog : nullptr,
+                    catalog ? SQL_NTS : 0,
+                    schema ? (SQLCHAR *)schema : nullptr,
+                    schema ? SQL_NTS : 0,
+                    table ? (SQLCHAR *)table : nullptr,
+                    table ? SQL_NTS : 0,
+                    nullptr, 0);                /* column name: all */
+    if (!SQL_SUCCEEDED(rc)) {
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        throw std::runtime_error("SQLColumns failed");
+    }
+
+    auto result = stmt_result_to_json(stmt);
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    return result.dump();
+}
+
+/* ── Execute in specific catalog (database) ─────────────────────── */
+
+static std::string build_query_in_catalog(const char *conn_str,
+                                           const char *catalog,
+                                           const char *query) {
+    nanodbc::connection conn(conn_str);
+    SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
+
+    /* Save current catalog */
+    SQLCHAR orig_catalog[512];
+    SQLINTEGER orig_len = 0;
+    SQLGetConnectAttr(dbc, SQL_ATTR_CURRENT_CATALOG,
+                      orig_catalog, sizeof(orig_catalog), &orig_len);
+
+    /* Switch to target catalog */
+    SQLSetConnectAttr(dbc, SQL_ATTR_CURRENT_CATALOG,
+                      (SQLPOINTER)catalog, SQL_NTS);
+
+    /* Execute the query */
+    std::string json_result;
+    try {
+        nanodbc::result result = nanodbc::execute(conn, query);
+        json_result = result_to_json(result);
+    } catch (...) {
+        /* Restore original catalog before re-throwing */
+        SQLSetConnectAttr(dbc, SQL_ATTR_CURRENT_CATALOG,
+                          orig_catalog, orig_len);
+        throw;
+    }
+
+    /* Restore original catalog */
+    SQLSetConnectAttr(dbc, SQL_ATTR_CURRENT_CATALOG,
+                      orig_catalog, orig_len);
+
+    return json_result;
+}
+
+static std::string build_driver_info(const char *conn_str) {
+    nanodbc::connection conn(conn_str);
+    SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
+    SQLHENV env = static_cast<SQLHENV>(conn.native_env_handle());
+
+    nlohmann::ordered_json result;
+    result["get_info"]    = collect_get_info(dbc);
+    result["type_info"]   = collect_type_info(dbc);
+    result["functions"]   = collect_functions(dbc);
+    result["drivers"]     = collect_drivers(env);
+    result["catalogs"]    = collect_catalogs(dbc);
+    result["schemas"]     = collect_schemas(dbc);
+    result["table_types"] = collect_table_types(dbc);
+
+    return result.dump();
+}
+
 /* ── C API ───────────────────────────────────────────────────────── */
 
 extern "C" {
@@ -315,6 +915,66 @@ char *blobodbc_query_clob_named(const char *conn_str, const char *query,
         g_errmsg.clear();
         auto result = execute_named(conn_str, query, bind_json);
         return strdup_result(result_to_clob(result));
+    } catch (const nanodbc::database_error &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    }
+}
+
+char *blobodbc_driver_info(const char *conn_str) {
+    try {
+        g_errmsg.clear();
+        return strdup_result(build_driver_info(conn_str));
+    } catch (const nanodbc::database_error &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    }
+}
+
+char *blobodbc_tables(const char *conn_str,
+                      const char *catalog,
+                      const char *schema,
+                      const char *type) {
+    try {
+        g_errmsg.clear();
+        return strdup_result(build_tables(conn_str, catalog, schema, type));
+    } catch (const nanodbc::database_error &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    }
+}
+
+char *blobodbc_columns(const char *conn_str,
+                       const char *catalog,
+                       const char *schema,
+                       const char *table) {
+    try {
+        g_errmsg.clear();
+        return strdup_result(build_columns(conn_str, catalog, schema, table));
+    } catch (const nanodbc::database_error &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    }
+}
+
+char *blobodbc_query_json_in_catalog(const char *conn_str,
+                                      const char *catalog,
+                                      const char *query) {
+    try {
+        g_errmsg.clear();
+        return strdup_result(build_query_in_catalog(conn_str, catalog, query));
     } catch (const nanodbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;

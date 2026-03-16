@@ -83,6 +83,14 @@ if(BUILD_DUCKDB_EXTENSION)
   if(APPLE)
     target_link_options(blobodbc_duckdb PRIVATE -undefined dynamic_lookup)
   endif()
+
+  # Generate .duckdb_extension with metadata footer
+  find_program(PYTHON_EXE NAMES python3 python REQUIRED)
+  add_custom_command(TARGET blobodbc_duckdb POST_BUILD
+    COMMAND ${PYTHON_EXE} "${CMAKE_SOURCE_DIR}/duckdb_ext/append_metadata.py"
+      "$<TARGET_FILE:blobodbc_duckdb>"
+      "$<TARGET_FILE_DIR:blobodbc_duckdb>/blobodbc.duckdb_extension"
+    COMMENT "Appending DuckDB extension metadata → blobodbc.duckdb_extension")
 endif()
 
 # ── SQLite extension ────────────────────────────────────────────

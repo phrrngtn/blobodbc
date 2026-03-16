@@ -6,6 +6,7 @@
  *   odbc_query(conn_str, sql, p1, p2, ...)   -> JSON TEXT (with bind params)
  *   odbc_clob(conn_str, sql)                 -> TEXT
  *   odbc_clob(conn_str, sql, p1, p2, ...)    -> TEXT (with bind params)
+ *   odbc_driver_info(conn_str)               -> JSON TEXT
  */
 
 #include <sqlite3ext.h>
@@ -136,6 +137,105 @@ static void odbc_clob_named_func(sqlite3_context *ctx, int argc, sqlite3_value *
     }
 }
 
+/* ── odbc_driver_info(conn_str) ───────────────────────────────────── */
+
+static void odbc_driver_info_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL) {
+        sqlite3_result_null(ctx);
+        return;
+    }
+
+    const char *conn_str = (const char *)sqlite3_value_text(argv[0]);
+
+    char *result = blobodbc_driver_info(conn_str);
+    if (result) {
+        sqlite3_result_text(ctx, result, -1, SQLITE_TRANSIENT);
+        blobodbc_free(result);
+    } else {
+        sqlite3_result_error(ctx, blobodbc_errmsg(), -1);
+    }
+}
+
+/* ── odbc_tables(conn_str [, schema [, type]]) ────────────────────── */
+
+static void odbc_tables_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    if (argc < 1) {
+        sqlite3_result_error(ctx, "odbc_tables requires at least 1 argument", -1);
+        return;
+    }
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL) {
+        sqlite3_result_null(ctx);
+        return;
+    }
+
+    const char *conn_str = (const char *)sqlite3_value_text(argv[0]);
+    const char *schema = (argc >= 2 && sqlite3_value_type(argv[1]) != SQLITE_NULL)
+                          ? (const char *)sqlite3_value_text(argv[1]) : NULL;
+    const char *type   = (argc >= 3 && sqlite3_value_type(argv[2]) != SQLITE_NULL)
+                          ? (const char *)sqlite3_value_text(argv[2]) : NULL;
+
+    const char *catalog = (argc >= 4 && sqlite3_value_type(argv[3]) != SQLITE_NULL)
+                           ? (const char *)sqlite3_value_text(argv[3]) : NULL;
+
+    char *result = blobodbc_tables(conn_str, catalog, schema, type);
+    if (result) {
+        sqlite3_result_text(ctx, result, -1, SQLITE_TRANSIENT);
+        blobodbc_free(result);
+    } else {
+        sqlite3_result_error(ctx, blobodbc_errmsg(), -1);
+    }
+}
+
+/* ── odbc_columns(conn_str, table [, schema]) ─────────────────────── */
+
+static void odbc_columns_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    if (argc < 2) {
+        sqlite3_result_error(ctx, "odbc_columns requires at least 2 arguments", -1);
+        return;
+    }
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL ||
+        sqlite3_value_type(argv[1]) == SQLITE_NULL) {
+        sqlite3_result_null(ctx);
+        return;
+    }
+
+    const char *conn_str = (const char *)sqlite3_value_text(argv[0]);
+    const char *table    = (const char *)sqlite3_value_text(argv[1]);
+    const char *schema   = (argc >= 3 && sqlite3_value_type(argv[2]) != SQLITE_NULL)
+                            ? (const char *)sqlite3_value_text(argv[2]) : NULL;
+
+    char *result = blobodbc_columns(conn_str, NULL, schema, table);
+    if (result) {
+        sqlite3_result_text(ctx, result, -1, SQLITE_TRANSIENT);
+        blobodbc_free(result);
+    } else {
+        sqlite3_result_error(ctx, blobodbc_errmsg(), -1);
+    }
+}
+
+/* ── odbc_query_in_catalog(conn_str, catalog, sql) ────────────────── */
+
+static void odbc_query_in_catalog_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL ||
+        sqlite3_value_type(argv[1]) == SQLITE_NULL ||
+        sqlite3_value_type(argv[2]) == SQLITE_NULL) {
+        sqlite3_result_null(ctx);
+        return;
+    }
+
+    const char *conn_str = (const char *)sqlite3_value_text(argv[0]);
+    const char *catalog  = (const char *)sqlite3_value_text(argv[1]);
+    const char *query    = (const char *)sqlite3_value_text(argv[2]);
+
+    char *result = blobodbc_query_json_in_catalog(conn_str, catalog, query);
+    if (result) {
+        sqlite3_result_text(ctx, result, -1, SQLITE_TRANSIENT);
+        blobodbc_free(result);
+    } else {
+        sqlite3_result_error(ctx, blobodbc_errmsg(), -1);
+    }
+}
+
 /* ── Extension init ──────────────────────────────────────────────── */
 
 #ifdef _WIN32
@@ -160,5 +260,21 @@ int sqlite3_blobodbc_init(sqlite3 *db, char **pzErrMsg,
 
     rc = sqlite3_create_function(db, "odbc_clob_named", 3,
                                   SQLITE_UTF8, NULL, odbc_clob_named_func, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_create_function(db, "odbc_driver_info", 1,
+                                  SQLITE_UTF8, NULL, odbc_driver_info_func, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_create_function(db, "odbc_tables", -1,
+                                  SQLITE_UTF8, NULL, odbc_tables_func, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_create_function(db, "odbc_columns", -1,
+                                  SQLITE_UTF8, NULL, odbc_columns_func, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_create_function(db, "odbc_query_in_catalog", 3,
+                                  SQLITE_UTF8, NULL, odbc_query_in_catalog_func, NULL, NULL);
     return rc;
 }
