@@ -770,108 +770,6 @@ static void odbc_execute_func(duckdb_function_info info,
     }
 }
 
-/* ── json_diff(source, target) -> JSON Patch ─────────────────────── */
-
-static void json_diff_func(duckdb_function_info info,
-                             duckdb_data_chunk input,
-                             duckdb_vector output) {
-    idx_t size = duckdb_data_chunk_get_size(input);
-    duckdb_vector vec0 = duckdb_data_chunk_get_vector(input, 0);
-    duckdb_vector vec1 = duckdb_data_chunk_get_vector(input, 1);
-    duckdb_string_t *data0 = (duckdb_string_t *)duckdb_vector_get_data(vec0);
-    duckdb_string_t *data1 = (duckdb_string_t *)duckdb_vector_get_data(vec1);
-    uint64_t *val0 = duckdb_vector_get_validity(vec0);
-    uint64_t *val1 = duckdb_vector_get_validity(vec1);
-
-    for (idx_t row = 0; row < size; row++) {
-        if ((val0 && !duckdb_validity_row_is_valid(val0, row)) ||
-            (val1 && !duckdb_validity_row_is_valid(val1, row))) {
-            duckdb_vector_ensure_validity_writable(output);
-            duckdb_validity_set_row_invalid(duckdb_vector_get_validity(output), row);
-            continue;
-        }
-        char *source = str_dup_z(&data0[row]);
-        char *target = str_dup_z(&data1[row]);
-        char *result = blobodbc_json_diff(source, target);
-        free(source); free(target);
-        if (result) {
-            duckdb_vector_assign_string_element(output, row, result);
-            blobodbc_free(result);
-        } else {
-            duckdb_scalar_function_set_error(info, blobodbc_errmsg());
-            return;
-        }
-    }
-}
-
-/* ── json_patch_apply(doc, patch) -> JSON ────────────────────────── */
-
-static void json_patch_apply_func(duckdb_function_info info,
-                                    duckdb_data_chunk input,
-                                    duckdb_vector output) {
-    idx_t size = duckdb_data_chunk_get_size(input);
-    duckdb_vector vec0 = duckdb_data_chunk_get_vector(input, 0);
-    duckdb_vector vec1 = duckdb_data_chunk_get_vector(input, 1);
-    duckdb_string_t *data0 = (duckdb_string_t *)duckdb_vector_get_data(vec0);
-    duckdb_string_t *data1 = (duckdb_string_t *)duckdb_vector_get_data(vec1);
-    uint64_t *val0 = duckdb_vector_get_validity(vec0);
-    uint64_t *val1 = duckdb_vector_get_validity(vec1);
-
-    for (idx_t row = 0; row < size; row++) {
-        if ((val0 && !duckdb_validity_row_is_valid(val0, row)) ||
-            (val1 && !duckdb_validity_row_is_valid(val1, row))) {
-            duckdb_vector_ensure_validity_writable(output);
-            duckdb_validity_set_row_invalid(duckdb_vector_get_validity(output), row);
-            continue;
-        }
-        char *doc   = str_dup_z(&data0[row]);
-        char *patch = str_dup_z(&data1[row]);
-        char *result = blobodbc_json_patch(doc, patch);
-        free(doc); free(patch);
-        if (result) {
-            duckdb_vector_assign_string_element(output, row, result);
-            blobodbc_free(result);
-        } else {
-            duckdb_scalar_function_set_error(info, blobodbc_errmsg());
-            return;
-        }
-    }
-}
-
-/* ── json_nest(data, keys) -> JSON ───────────────────────────────── */
-
-static void json_nest_func(duckdb_function_info info,
-                             duckdb_data_chunk input,
-                             duckdb_vector output) {
-    idx_t size = duckdb_data_chunk_get_size(input);
-    duckdb_vector vec0 = duckdb_data_chunk_get_vector(input, 0);
-    duckdb_vector vec1 = duckdb_data_chunk_get_vector(input, 1);
-    duckdb_string_t *data0 = (duckdb_string_t *)duckdb_vector_get_data(vec0);
-    duckdb_string_t *data1 = (duckdb_string_t *)duckdb_vector_get_data(vec1);
-    uint64_t *val0 = duckdb_vector_get_validity(vec0);
-    uint64_t *val1 = duckdb_vector_get_validity(vec1);
-
-    for (idx_t row = 0; row < size; row++) {
-        if ((val0 && !duckdb_validity_row_is_valid(val0, row)) ||
-            (val1 && !duckdb_validity_row_is_valid(val1, row))) {
-            duckdb_vector_ensure_validity_writable(output);
-            duckdb_validity_set_row_invalid(duckdb_vector_get_validity(output), row);
-            continue;
-        }
-        char *data = str_dup_z(&data0[row]);
-        char *keys = str_dup_z(&data1[row]);
-        char *result = blobodbc_json_nest(data, keys);
-        free(data); free(keys);
-        if (result) {
-            duckdb_vector_assign_string_element(output, row, result);
-            blobodbc_free(result);
-        } else {
-            duckdb_scalar_function_set_error(info, blobodbc_errmsg());
-            return;
-        }
-    }
-}
-
 /* ── Register functions ──────────────────────────────────────────── */
 
 static void register_functions(duckdb_connection connection) {
@@ -1120,42 +1018,6 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_logical_type(&int_type);
     }
 
-    /* json_diff(source, target) → RFC 6902 JSON Patch */
-    {
-        duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "json_diff");
-        duckdb_scalar_function_add_parameter(func, varchar_type);
-        duckdb_scalar_function_add_parameter(func, varchar_type);
-        duckdb_scalar_function_set_return_type(func, varchar_type);
-        duckdb_scalar_function_set_function(func, json_diff_func);
-        duckdb_register_scalar_function(connection, func);
-        duckdb_destroy_scalar_function(&func);
-    }
-
-    /* json_patch_apply(doc, patch) → patched JSON */
-    {
-        duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "json_patch_apply");
-        duckdb_scalar_function_add_parameter(func, varchar_type);
-        duckdb_scalar_function_add_parameter(func, varchar_type);
-        duckdb_scalar_function_set_return_type(func, varchar_type);
-        duckdb_scalar_function_set_function(func, json_patch_apply_func);
-        duckdb_register_scalar_function(connection, func);
-        duckdb_destroy_scalar_function(&func);
-    }
-
-    /* json_nest(data, keys) → nested JSON */
-    {
-        duckdb_scalar_function func = duckdb_create_scalar_function();
-        duckdb_scalar_function_set_name(func, "json_nest");
-        duckdb_scalar_function_add_parameter(func, varchar_type);
-        duckdb_scalar_function_add_parameter(func, varchar_type);
-        duckdb_scalar_function_set_return_type(func, varchar_type);
-        duckdb_scalar_function_set_function(func, json_nest_func);
-        duckdb_register_scalar_function(connection, func);
-        duckdb_destroy_scalar_function(&func);
-    }
-
     duckdb_destroy_logical_type(&varchar_type);
 }
 
@@ -1207,6 +1069,69 @@ static void populate_catalog_queries(duckdb_connection connection) {
     duckdb_destroy_prepare(&stmt);
 }
 
+/* ── Create derived views ────────────────────────────────────────── */
+
+static void create_views(duckdb_connection connection) {
+    duckdb_state state;
+    duckdb_result result;
+
+    /* changelog: human-readable schema change log derived from the
+     * TTST reverse patch chain.  Flips reverse-patch semantics to
+     * show forward changes (ADD/ALTER/DROP) and parses JSON Pointer
+     * paths into schema/table/column/attribute components.
+     *
+     * Depends on schema_snapshot_patch (created by the intern pipeline).
+     * The view is CREATE OR REPLACE so it's safe to re-run on every load.
+     * If the table doesn't exist yet, the view is created but will error
+     * on query — which is fine, it just means no samples have been interned. */
+    state = duckdb_query(connection,
+        "CREATE OR REPLACE VIEW blobodbc.changelog AS "
+        "WITH PATCHES AS ("
+        "    SELECT"
+        "        p.dataserver_id,"
+        "        p.catalog_name,"
+        "        p.schema_name,"
+        "        p.kind,"
+        "        p.revision_num,"
+        "        p.captured_at,"
+        "        unnest(from_json(p.patch::JSON, '[\"json\"]')) AS op"
+        "    FROM schema_snapshot_patch AS p"
+        ") "
+        "SELECT"
+        "    p.dataserver_id,"
+        "    p.catalog_name,"
+        "    p.schema_name AS sample_schema,"
+        "    p.captured_at,"
+        "    p.kind,"
+        "    p.revision_num,"
+        "    CASE op->>'op'"
+        "        WHEN 'remove' THEN 'ADD'"
+        "        WHEN 'add'    THEN 'DROP'"
+        "        WHEN 'replace' THEN 'ALTER'"
+        "    END AS change_type,"
+        "    op->>'path' AS path,"
+        "    split_part(op->>'path', '/', 2) AS object_schema,"
+        "    CASE WHEN length(op->>'path') - length(replace(op->>'path', '/', '')) >= 2"
+        "         THEN split_part(op->>'path', '/', 3)"
+        "         ELSE NULL"
+        "    END AS table_name,"
+        "    CASE WHEN length(op->>'path') - length(replace(op->>'path', '/', '')) >= 3"
+        "         THEN split_part(op->>'path', '/', 4)"
+        "         ELSE NULL"
+        "    END AS column_or_constraint,"
+        "    CASE WHEN length(op->>'path') - length(replace(op->>'path', '/', '')) >= 4"
+        "         THEN split_part(op->>'path', '/', 5)"
+        "         ELSE NULL"
+        "    END AS attribute,"
+        "    CASE op->>'op'"
+        "        WHEN 'replace' THEN op->>'value'"
+        "        ELSE NULL"
+        "    END AS old_value"
+        " FROM PATCHES AS p",
+        &result);
+    duckdb_destroy_result(&result);
+}
+
 /* ── Extension entrypoint ────────────────────────────────────────── */
 
 DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection,
@@ -1214,5 +1139,6 @@ DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection,
                              struct duckdb_extension_access *access) {
     register_functions(connection);
     populate_catalog_queries(connection);
+    create_views(connection);
     return true;
 }

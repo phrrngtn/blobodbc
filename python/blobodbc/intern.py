@@ -135,7 +135,7 @@ def intern_sample(duck, dataserver_id, catalog_name, schema_name, kind,
 
     # Diff: current → new
     diff_raw = duck.execute(
-        "SELECT json_diff(?, ?)", [current_snapshot, nested]
+        "SELECT json_from_diff(?, ?)", [current_snapshot, nested]
     ).fetchone()[0]
     diff = json.loads(diff_raw)
 
@@ -144,7 +144,7 @@ def intern_sample(duck, dataserver_id, catalog_name, schema_name, kind,
 
     # Compute reverse patch: new → current (so we can reconstruct current from new)
     reverse_patch_raw = duck.execute(
-        "SELECT json_diff(?, ?)", [nested, current_snapshot]
+        "SELECT json_from_diff(?, ?)", [nested, current_snapshot]
     ).fetchone()[0]
 
     new_rev = current_rev + 1
@@ -205,7 +205,7 @@ def reconstruct_at_revision(duck, dataserver_id, catalog_name, schema_name,
     doc = snapshot
     for rev_num, patch in patches:
         doc = duck.execute(
-            "SELECT json_patch_apply(?, ?)", [doc, patch]
+            "SELECT json_apply_patch(?, ?)", [doc, patch]
         ).fetchone()[0]
 
     return doc
