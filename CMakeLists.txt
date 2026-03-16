@@ -6,12 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
 
-# ── nlohmann/json ─────────────────────────────────────────────────
-FetchContent_Declare(nlohmann_json
-  URL "https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz"
-  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-
-# ── jsoncons (header-only, internal use for JMESPath reshaping) ───
+# ── jsoncons (header-only: JSON, JSON Patch, JMESPath) ────────────
 set(JSONCONS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(jsoncons
   GIT_REPOSITORY https://github.com/danielaparker/jsoncons.git
@@ -28,12 +23,12 @@ set(NANODBC_DISABLE_TESTS ON CACHE BOOL "" FORCE)
 set(NANODBC_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
 set(NANODBC_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(nlohmann_json nanodbc)
+FetchContent_MakeAvailable(nanodbc)
 
 # ── Core sources ──────────────────────────────────────────────────
 set(BO_SOURCES src/blobodbc_core.cpp)
 set(BO_INCLUDES include ${jsoncons_SOURCE_DIR}/include)
-set(BO_LIBS nanodbc nlohmann_json::nlohmann_json)
+set(BO_LIBS nanodbc)
 
 # ── C example ────────────────────────────────────────────────────
 if(EXISTS "${CMAKE_SOURCE_DIR}/example/main.c")

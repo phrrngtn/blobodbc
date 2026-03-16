@@ -1,7 +1,6 @@
 #include "blobodbc.h"
 
 #include <nanodbc/nanodbc.h>
-#include <nlohmann/json.hpp>
 
 #include <jsoncons/json.hpp>
 #include <jsoncons_ext/jsonpatch/jsonpatch.hpp>
@@ -13,6 +12,8 @@
 #include <string>
 #include <vector>
 
+using json = jsoncons::json;
+
 static thread_local std::string g_errmsg;
 
 static char *strdup_result(const std::string &s) {
@@ -23,38 +24,38 @@ static char *strdup_result(const std::string &s) {
 
 /* ── Column type dispatch ────────────────────────────────────────── */
 
-using column_getter = void (*)(nlohmann::json &, nanodbc::result &, short);
+using column_getter = void (*)(json &, nanodbc::result &, short);
 
-static void get_int_value(nlohmann::json &jv, nanodbc::result &r, short col) {
+static void get_int_value(json &jv, nanodbc::result &r, short col) {
     jv = r.get<long long>(col);
 }
 
-static void get_float_value(nlohmann::json &jv, nanodbc::result &r, short col) {
+static void get_float_value(json &jv, nanodbc::result &r, short col) {
     jv = r.get<double>(col);
 }
 
-static void get_string_value(nlohmann::json &jv, nanodbc::result &r, short col) {
+static void get_string_value(json &jv, nanodbc::result &r, short col) {
     jv = r.get<std::string>(col);
 }
 
-static void get_date_value(nlohmann::json &jv, nanodbc::result &r, short col) {
+static void get_date_value(json &jv, nanodbc::result &r, short col) {
     nanodbc::date d = r.get<nanodbc::date>(col);
     char buf[32];
     snprintf(buf, sizeof(buf), "%04d-%02d-%02d", d.year, d.month, d.day);
-    jv = buf;
+    jv = std::string(buf);
 }
 
-static void get_timestamp_value(nlohmann::json &jv, nanodbc::result &r, short col) {
+static void get_timestamp_value(json &jv, nanodbc::result &r, short col) {
     nanodbc::timestamp ts = r.get<nanodbc::timestamp>(col);
     char buf[64];
     snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%09d",
              ts.year, ts.month, ts.day,
              ts.hour, ts.min, ts.sec, ts.fract);
-    jv = buf;
+    jv = std::string(buf);
 }
 
-static void get_null_value(nlohmann::json &jv, nanodbc::result &, short) {
-    jv = nullptr;
+static void get_null_value(json &jv, nanodbc::result &, short) {
+    jv = json::null();
 }
 
 static column_getter getter_for_column(nanodbc::result &r, short col) {
@@ -113,23 +114,23 @@ static std::string result_to_json(nanodbc::result &result) {
         getters[i] = getter_for_column(result, i);
     }
 
-    nlohmann::ordered_json rows = nlohmann::ordered_json::array();
+    json rows(jsoncons::json_array_arg);
 
     while (result.next()) {
-        nlohmann::ordered_json row;
+        json row(jsoncons::json_object_arg);
         for (int i = 0; i < n; i++) {
-            nlohmann::json val;
+            json val;
             if (result.is_null(i)) {
-                val = nullptr;
+                val = json::null();
             } else {
                 getters[i](val, result, i);
             }
-            row[names[i]] = val;
+            row.insert_or_assign(names[i], std::move(val));
         }
         rows.push_back(std::move(row));
     }
 
-    return rows.dump();
+    return rows.to_string();
 }
 
 /* ── Result set → CLOB (first column of first row) ───────────────── */
@@ -191,8 +192,7 @@ static bool is_ident_char(char c) {
     return is_ident_start(c) || (c >= '0' && c <= '9');
 }
 
-static NamedBindInfo rewrite_named_params(const char *sql,
-                                            const nlohmann::json &binds) {
+static NamedBindInfo rewrite_named_params(const char *sql, const json &binds) {
     NamedBindInfo info;
     std::string &out = info.rewritten_sql;
     const char *p = sql;
@@ -213,16 +213,16 @@ static NamedBindInfo rewrite_named_params(const char *sql,
             out += '?';
 
             if (binds.contains(name)) {
-                auto &val = binds[name];
+                const auto &val = binds[name];
                 if (val.is_null()) {
                     info.values.emplace_back();
                     info.is_null.push_back(true);
                 } else if (val.is_string()) {
-                    info.values.push_back(val.get<std::string>());
+                    info.values.push_back(val.as<std::string>());
                     info.is_null.push_back(false);
                 } else {
                     /* numbers, booleans — convert to string */
-                    info.values.push_back(val.dump());
+                    info.values.push_back(val.to_string());
                     info.is_null.push_back(false);
                 }
             } else {
@@ -240,7 +240,7 @@ static NamedBindInfo rewrite_named_params(const char *sql,
 
 static nanodbc::result execute_named(const char *conn_str, const char *query,
                                       const char *bind_json) {
-    nlohmann::json binds = nlohmann::json::parse(bind_json);
+    json binds = json::parse(bind_json);
     auto info = rewrite_named_params(query, binds);
 
     nanodbc::connection conn(conn_str);
@@ -359,8 +359,8 @@ static const InfoEntry g_info_catalog[] = {
     {SQL_KEYWORDS,                 "SQL_KEYWORDS",                's'},
 };
 
-static nlohmann::ordered_json collect_get_info(SQLHDBC dbc) {
-    nlohmann::ordered_json info;
+static json collect_get_info(SQLHDBC dbc) {
+    json info(jsoncons::json_object_arg);
 
     for (const auto &entry : g_info_catalog) {
         switch (entry.category) {
@@ -369,9 +369,10 @@ static nlohmann::ordered_json collect_get_info(SQLHDBC dbc) {
             SQLSMALLINT len = 0;
             SQLRETURN rc = SQLGetInfo(dbc, entry.type_id, buf, sizeof(buf), &len);
             if (SQL_SUCCEEDED(rc)) {
-                info[entry.name] = std::string(reinterpret_cast<char *>(buf), len);
+                info.insert_or_assign(entry.name,
+                    std::string(reinterpret_cast<char *>(buf), len));
             } else {
-                info[entry.name] = nullptr;
+                info.insert_or_assign(entry.name, json::null());
             }
             break;
         }
@@ -379,9 +380,9 @@ static nlohmann::ordered_json collect_get_info(SQLHDBC dbc) {
             SQLUINTEGER val = 0;
             SQLRETURN rc = SQLGetInfo(dbc, entry.type_id, &val, sizeof(val), nullptr);
             if (SQL_SUCCEEDED(rc)) {
-                info[entry.name] = static_cast<unsigned long>(val);
+                info.insert_or_assign(entry.name, static_cast<int64_t>(val));
             } else {
-                info[entry.name] = nullptr;
+                info.insert_or_assign(entry.name, json::null());
             }
             break;
         }
@@ -389,9 +390,9 @@ static nlohmann::ordered_json collect_get_info(SQLHDBC dbc) {
             SQLUSMALLINT val = 0;
             SQLRETURN rc = SQLGetInfo(dbc, entry.type_id, &val, sizeof(val), nullptr);
             if (SQL_SUCCEEDED(rc)) {
-                info[entry.name] = static_cast<int>(val);
+                info.insert_or_assign(entry.name, static_cast<int64_t>(val));
             } else {
-                info[entry.name] = nullptr;
+                info.insert_or_assign(entry.name, json::null());
             }
             break;
         }
@@ -401,8 +402,8 @@ static nlohmann::ordered_json collect_get_info(SQLHDBC dbc) {
     return info;
 }
 
-static nlohmann::ordered_json collect_type_info(SQLHDBC dbc) {
-    nlohmann::ordered_json types = nlohmann::ordered_json::array();
+static json collect_type_info(SQLHDBC dbc) {
+    json types(jsoncons::json_array_arg);
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt);
@@ -435,14 +436,14 @@ static nlohmann::ordered_json collect_type_info(SQLHDBC dbc) {
     }
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
-        nlohmann::ordered_json row;
+        json row(jsoncons::json_object_arg);
         for (SQLSMALLINT i = 0; i < ncols; i++) {
             SQLLEN indicator = 0;
             SQLCHAR buf[1024];
             rc = SQLGetData(stmt, i + 1, SQL_C_CHAR, buf, sizeof(buf), &indicator);
 
             if (!SQL_SUCCEEDED(rc) || indicator == SQL_NULL_DATA) {
-                row[cols[i].name] = nullptr;
+                row.insert_or_assign(cols[i].name, json::null());
                 continue;
             }
 
@@ -454,10 +455,11 @@ static nlohmann::ordered_json collect_type_info(SQLHDBC dbc) {
             case SQL_INTEGER:
             case SQL_TINYINT:
             case SQL_BIGINT:
-                try { row[cols[i].name] = std::stoll(sval); } catch (...) { row[cols[i].name] = sval; }
+                try { row.insert_or_assign(cols[i].name, std::stoll(sval)); }
+                catch (...) { row.insert_or_assign(cols[i].name, sval); }
                 break;
             default:
-                row[cols[i].name] = sval;
+                row.insert_or_assign(cols[i].name, sval);
                 break;
             }
         }
@@ -538,16 +540,16 @@ static const FuncEntry g_func_catalog[] = {
     {SQL_API_SQLCOLUMNPRIVILEGES,   "SQLColumnPrivileges"},
 };
 
-static nlohmann::ordered_json collect_functions(SQLHDBC dbc) {
-    nlohmann::ordered_json funcs;
+static json collect_functions(SQLHDBC dbc) {
+    json funcs(jsoncons::json_object_arg);
 
     for (const auto &entry : g_func_catalog) {
         SQLUSMALLINT supported = SQL_FALSE;
         SQLRETURN rc = SQLGetFunctions(dbc, entry.id, &supported);
         if (SQL_SUCCEEDED(rc)) {
-            funcs[entry.name] = (supported == SQL_TRUE);
+            funcs.insert_or_assign(entry.name, supported == SQL_TRUE);
         } else {
-            funcs[entry.name] = nullptr;
+            funcs.insert_or_assign(entry.name, json::null());
         }
     }
 
@@ -556,8 +558,8 @@ static nlohmann::ordered_json collect_functions(SQLHDBC dbc) {
 
 /* ── SQLDrivers (environment-level) ─────────────────────────────── */
 
-static nlohmann::ordered_json collect_drivers(SQLHENV env) {
-    nlohmann::ordered_json drivers = nlohmann::ordered_json::array();
+static json collect_drivers(SQLHENV env) {
+    json drivers(jsoncons::json_array_arg);
 
     SQLCHAR  name[256];
     SQLCHAR  attrs[4096];
@@ -571,11 +573,12 @@ static nlohmann::ordered_json collect_drivers(SQLHENV env) {
         if (!SQL_SUCCEEDED(rc))
             break;
 
-        nlohmann::ordered_json drv;
-        drv["name"] = std::string(reinterpret_cast<char *>(name), name_len);
+        json drv(jsoncons::json_object_arg);
+        drv.insert_or_assign("name",
+            std::string(reinterpret_cast<char *>(name), name_len));
 
         /* Attributes are key=value pairs separated by NUL bytes */
-        nlohmann::ordered_json attr_obj;
+        json attr_obj(jsoncons::json_object_arg);
         const char *p = reinterpret_cast<char *>(attrs);
         const char *end = p + attrs_len;
         while (p < end && *p) {
@@ -583,10 +586,10 @@ static nlohmann::ordered_json collect_drivers(SQLHENV env) {
             p += kv.size() + 1;
             auto eq = kv.find('=');
             if (eq != std::string::npos) {
-                attr_obj[kv.substr(0, eq)] = kv.substr(eq + 1);
+                attr_obj.insert_or_assign(kv.substr(0, eq), kv.substr(eq + 1));
             }
         }
-        drv["attributes"] = attr_obj;
+        drv.insert_or_assign("attributes", std::move(attr_obj));
         drivers.push_back(std::move(drv));
 
         direction = SQL_FETCH_NEXT;
@@ -599,20 +602,20 @@ static nlohmann::ordered_json collect_drivers(SQLHENV env) {
 
 /*
  * Helper: call SQLTables in one of its special enumeration modes and
- * collect column 1 from the result set as a JSON array of strings.
+ * collect non-empty columns from each row as an object.
  *
  * The ODBC spec defines three special invocations of SQLTables:
  *   - catalog = SQL_ALL_CATALOGS, schema = "", table = ""  → list catalogs
  *   - catalog = "", schema = SQL_ALL_SCHEMAS, table = ""   → list schemas
  *   - catalog = "", schema = "", table = "", type = SQL_ALL_TABLE_TYPES → list table types
  */
-static nlohmann::ordered_json sqltables_enumerate(
+static json sqltables_enumerate(
         SQLHDBC dbc,
         const char *catalog,
         const char *schema,
         const char *table,
         const char *type) {
-    nlohmann::ordered_json items = nlohmann::ordered_json::array();
+    json items(jsoncons::json_array_arg);
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt);
@@ -629,10 +632,6 @@ static nlohmann::ordered_json sqltables_enumerate(
         return items;
     }
 
-    /* For catalog/schema/type enumeration, the interesting value is
-     * in different columns depending on the mode. Rather than hardcode
-     * column indices, return all non-empty columns from each row as
-     * an object — this handles driver quirks gracefully. */
     SQLSMALLINT ncols = 0;
     SQLNumResultCols(stmt, &ncols);
 
@@ -647,7 +646,7 @@ static nlohmann::ordered_json sqltables_enumerate(
     }
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
-        nlohmann::ordered_json row;
+        json row(jsoncons::json_object_arg);
         for (SQLSMALLINT i = 0; i < ncols; i++) {
             SQLLEN indicator = 0;
             SQLCHAR buf[1024];
@@ -655,7 +654,7 @@ static nlohmann::ordered_json sqltables_enumerate(
             if (SQL_SUCCEEDED(rc) && indicator != SQL_NULL_DATA) {
                 std::string val(reinterpret_cast<char *>(buf));
                 if (!val.empty()) {
-                    row[col_names[i]] = val;
+                    row.insert_or_assign(col_names[i], val);
                 }
             }
         }
@@ -668,15 +667,15 @@ static nlohmann::ordered_json sqltables_enumerate(
     return items;
 }
 
-static nlohmann::ordered_json collect_catalogs(SQLHDBC dbc) {
+static json collect_catalogs(SQLHDBC dbc) {
     return sqltables_enumerate(dbc, "%", "", "", "");
 }
 
-static nlohmann::ordered_json collect_schemas(SQLHDBC dbc) {
+static json collect_schemas(SQLHDBC dbc) {
     return sqltables_enumerate(dbc, "", "%", "", "");
 }
 
-static nlohmann::ordered_json collect_table_types(SQLHDBC dbc) {
+static json collect_table_types(SQLHDBC dbc) {
     return sqltables_enumerate(dbc, "", "", "", "%");
 }
 
@@ -687,8 +686,8 @@ static nlohmann::ordered_json collect_table_types(SQLHDBC dbc) {
  * Used for SQLTables and SQLColumns result sets where we want every
  * column the driver returns, with numbers as numbers.
  */
-static nlohmann::ordered_json stmt_result_to_json(SQLHSTMT stmt) {
-    nlohmann::ordered_json rows = nlohmann::ordered_json::array();
+static json stmt_result_to_json(SQLHSTMT stmt) {
+    json rows(jsoncons::json_array_arg);
 
     SQLSMALLINT ncols = 0;
     SQLNumResultCols(stmt, &ncols);
@@ -709,14 +708,14 @@ static nlohmann::ordered_json stmt_result_to_json(SQLHSTMT stmt) {
     }
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
-        nlohmann::ordered_json row;
+        json row(jsoncons::json_object_arg);
         for (SQLSMALLINT i = 0; i < ncols; i++) {
             SQLLEN indicator = 0;
             SQLCHAR buf[4096];
             SQLRETURN rc = SQLGetData(stmt, i + 1, SQL_C_CHAR,
                                       buf, sizeof(buf), &indicator);
             if (!SQL_SUCCEEDED(rc) || indicator == SQL_NULL_DATA) {
-                row[cols[i].name] = nullptr;
+                row.insert_or_assign(cols[i].name, json::null());
                 continue;
             }
             std::string sval(reinterpret_cast<char *>(buf));
@@ -725,11 +724,11 @@ static nlohmann::ordered_json stmt_result_to_json(SQLHSTMT stmt) {
             case SQL_INTEGER:
             case SQL_TINYINT:
             case SQL_BIGINT:
-                try { row[cols[i].name] = std::stoll(sval); }
-                catch (...) { row[cols[i].name] = sval; }
+                try { row.insert_or_assign(cols[i].name, std::stoll(sval)); }
+                catch (...) { row.insert_or_assign(cols[i].name, sval); }
                 break;
             default:
-                row[cols[i].name] = sval;
+                row.insert_or_assign(cols[i].name, sval);
                 break;
             }
         }
@@ -768,7 +767,7 @@ static std::string build_tables(const char *conn_str,
 
     auto result = stmt_result_to_json(stmt);
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    return result.dump();
+    return result.to_string();
 }
 
 static std::string build_columns(const char *conn_str,
@@ -798,7 +797,7 @@ static std::string build_columns(const char *conn_str,
 
     auto result = stmt_result_to_json(stmt);
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    return result.dump();
+    return result.to_string();
 }
 
 /* ── Execute in specific catalog (database) ─────────────────────── */
@@ -843,16 +842,16 @@ static std::string build_driver_info(const char *conn_str) {
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
     SQLHENV env = static_cast<SQLHENV>(conn.native_env_handle());
 
-    nlohmann::ordered_json result;
-    result["get_info"]    = collect_get_info(dbc);
-    result["type_info"]   = collect_type_info(dbc);
-    result["functions"]   = collect_functions(dbc);
-    result["drivers"]     = collect_drivers(env);
-    result["catalogs"]    = collect_catalogs(dbc);
-    result["schemas"]     = collect_schemas(dbc);
-    result["table_types"] = collect_table_types(dbc);
+    json result(jsoncons::json_object_arg);
+    result.insert_or_assign("get_info",    collect_get_info(dbc));
+    result.insert_or_assign("type_info",   collect_type_info(dbc));
+    result.insert_or_assign("functions",   collect_functions(dbc));
+    result.insert_or_assign("drivers",     collect_drivers(env));
+    result.insert_or_assign("catalogs",    collect_catalogs(dbc));
+    result.insert_or_assign("schemas",     collect_schemas(dbc));
+    result.insert_or_assign("table_types", collect_table_types(dbc));
 
-    return result.dump();
+    return result.to_string();
 }
 
 /* ── JSON operations (jsoncons) ──────────────────────────────────── */
@@ -862,8 +861,8 @@ static std::string build_driver_info(const char *conn_str) {
  * The patch, when applied to source, produces target.
  */
 static std::string build_json_diff(const char *source_json, const char *target_json) {
-    auto source = jsoncons::json::parse(source_json);
-    auto target = jsoncons::json::parse(target_json);
+    auto source = json::parse(source_json);
+    auto target = json::parse(target_json);
     auto patch = jsoncons::jsonpatch::from_diff(source, target);
     return patch.to_string();
 }
@@ -873,8 +872,8 @@ static std::string build_json_diff(const char *source_json, const char *target_j
  * Returns the patched document.
  */
 static std::string build_json_patch(const char *doc_json, const char *patch_json) {
-    auto doc = jsoncons::json::parse(doc_json);
-    auto patch = jsoncons::json::parse(patch_json);
+    auto doc = json::parse(doc_json);
+    auto patch = json::parse(patch_json);
     jsoncons::jsonpatch::apply_patch(doc, patch);
     return doc.to_string();
 }
@@ -894,8 +893,8 @@ static std::string build_json_patch(const char *doc_json, const char *patch_json
  * If only one non-key field remains, it is inlined as the leaf value.
  */
 static std::string build_json_nest(const char *data_json, const char *keys_json) {
-    auto data = jsoncons::json::parse(data_json);
-    auto keys = jsoncons::json::parse(keys_json);
+    auto data = json::parse(data_json);
+    auto keys = json::parse(keys_json);
 
     if (!data.is_array() || !keys.is_array())
         throw std::runtime_error("json_nest: data must be array, keys must be array of strings");
@@ -908,13 +907,13 @@ static std::string build_json_nest(const char *data_json, const char *keys_json)
     if (key_names.empty())
         throw std::runtime_error("json_nest: keys array must not be empty");
 
-    jsoncons::json result(jsoncons::json_object_arg);
+    json result(jsoncons::json_object_arg);
 
     for (const auto &row : data.array_range()) {
         if (!row.is_object()) continue;
 
         /* Navigate/create the nesting hierarchy */
-        jsoncons::json *node = &result;
+        json *node = &result;
         for (size_t i = 0; i < key_names.size(); i++) {
             const auto &key = key_names[i];
             if (!row.contains(key)) break;
@@ -922,7 +921,7 @@ static std::string build_json_nest(const char *data_json, const char *keys_json)
 
             if (i == key_names.size() - 1) {
                 /* Leaf level: store remaining fields as the value */
-                jsoncons::json leaf(jsoncons::json_object_arg);
+                json leaf(jsoncons::json_object_arg);
                 for (const auto &member : row.object_range()) {
                     bool is_key = false;
                     for (const auto &kn : key_names) {
@@ -936,14 +935,13 @@ static std::string build_json_nest(const char *data_json, const char *keys_json)
             } else {
                 /* Intermediate level: ensure sub-object exists */
                 if (!node->contains(key_val)) {
-                    node->insert_or_assign(key_val, jsoncons::json(jsoncons::json_object_arg));
+                    node->insert_or_assign(key_val, json(jsoncons::json_object_arg));
                 }
                 node = &((*node)[key_val]);
             }
         }
     }
 
-    /* jsoncons default object iteration is insertion-order */
     return result.to_string();
 }
 
