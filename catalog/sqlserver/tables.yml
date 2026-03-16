@@ -1,0 +1,28 @@
+name: tables
+description: User tables with row counts and space usage
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "SCHEMA_NAME(t.schema_id) = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "t.name = :table_name"
+sql: |
+  SELECT
+      SCHEMA_NAME(t.schema_id)  AS table_schema,
+      t.name                    AS table_name,
+      t.type_desc,
+      t.create_date,
+      t.modify_date,
+      p.rows                    AS row_count,
+      t.is_tracked_by_cdc,
+      t.lock_escalation_desc
+  FROM sys.tables AS t
+  LEFT JOIN sys.partitions AS p
+      ON p.object_id = t.object_id
+     AND p.index_id IN (0, 1)

@@ -1,0 +1,34 @@
+name: tables
+description: User tables with row estimates and table kind
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "cl.relname = :table_name"
+sql: |
+  SELECT
+      nsp.nspname              AS table_schema,
+      cl.relname               AS table_name,
+      CASE cl.relkind
+          WHEN 'r' THEN 'TABLE'
+          WHEN 'p' THEN 'PARTITIONED TABLE'
+          WHEN 'f' THEN 'FOREIGN TABLE'
+      END                      AS type_desc,
+      CAST(cl.reltuples AS bigint) AS row_count_estimate,
+      cl.relpages              AS page_count,
+      cl.relhasindex            AS has_indexes,
+      cl.relhasrules            AS has_rules,
+      cl.relhastriggers         AS has_triggers,
+      cl.relrowsecurity         AS row_security_enabled,
+      obj_description(cl.oid)  AS table_comment
+  FROM pg_class AS cl
+  JOIN pg_namespace AS nsp ON nsp.oid = cl.relnamespace
+  WHERE cl.relkind IN ('r', 'p', 'f')
+    AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
