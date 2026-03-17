@@ -1,0 +1,10 @@
+# Copy to connections.toml and fill in credentials.
+# This file is gitignored — never commit connections.toml.
+
+[[connections]]
+label = "PostgreSQL (Unix socket)"
+connection_string = "DSN=rule4_test;GSSEncMode=disable"
+
+[[connections]]
+label = "SQL Server (Docker)"
+connection_string = "Driver={ODBC Driver 18 for SQL Server};Server=localhost,1433;Database=rule4_test;UID=rule4;PWD=CHANGEME;TrustServerCertificate=yes"

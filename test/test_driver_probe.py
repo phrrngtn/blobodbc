@@ -13,27 +13,31 @@ for your environment.
 """
 
 import json
+import os
 import sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 
 import pyodbc
 
 
 # ── Connections to probe ──────────────────────────────────────────
 
-CONNECTIONS = [
-    (
-        "DSN=rule4_test;GSSEncMode=disable",
-        "PostgreSQL (Unix socket)",
-    ),
-    (
-        "Driver={ODBC Driver 18 for SQL Server};"
-        "Server=localhost,1433;"
-        "Database=rule4_test;"
-        "UID=rule4;PWD=R4Developer!2024;"
-        "TrustServerCertificate=yes",
-        "SQL Server (Docker/Rosetta)",
-    ),
-]
+
+def _load_connections():
+    """Load test connections from test/connections.toml, falling back to defaults."""
+    config_path = os.path.join(os.path.dirname(__file__), "connections.toml")
+    if os.path.exists(config_path):
+        with open(config_path, "rb") as f:
+            cfg = tomllib.load(f)
+        return [(c["connection_string"], c["label"]) for c in cfg.get("connections", [])]
+    # Fallback: PostgreSQL via DSN only (no credentials needed)
+    return [("DSN=rule4_test;GSSEncMode=disable", "PostgreSQL (Unix socket)")]
+
+
+CONNECTIONS = _load_connections()
 
 
 # ── SQLGetInfo info-type catalog ──────────────────────────────────

@@ -24,7 +24,7 @@ the right interface for bulk data movement.
 
 blobodbc takes the opposite approach: every function is a **scalar** that
 returns a single VARCHAR (containing JSON). This is more composable — you can
-chain `jmespath_search(odbc_query(...), expr)` in a single expression, nest it
+chain `jmespath_search(bo_query(...), expr)` in a single expression, nest it
 inside CTEs, pass it to `template_render()`, or feed it to `json_each()` /
 `unnest()` when you do want rows. No TVF restrictions, no special syntax, works
 in any position a scalar works.
@@ -108,18 +108,18 @@ Result sets use `nlohmann::ordered_json` to preserve column order.
 .load /path/to/blobodbc
 
 -- Basic query
-SELECT odbc_query('DSN=mydsn', 'SELECT name, type FROM sys.objects');
+SELECT bo_query('DSN=mydsn', 'SELECT name, type FROM sys.objects');
 
 -- Positional bind parameters (variadic)
-SELECT odbc_query('DSN=mydsn',
+SELECT bo_query('DSN=mydsn',
     'SELECT * FROM t WHERE id = ? AND status = ?', 42, 'active');
 
 -- Named bind parameters
-SELECT odbc_query_named('DSN=mydsn',
+SELECT bo_query_named('DSN=mydsn',
     'SELECT * FROM t WHERE id = :id', '{"id": 42}');
 
 -- CLOB mode (first column of first row)
-SELECT odbc_clob('DSN=mydsn',
+SELECT bo_clob('DSN=mydsn',
     'SELECT * FROM t FOR JSON PATH');
 ```
 
@@ -127,10 +127,10 @@ SELECT odbc_clob('DSN=mydsn',
 
 | Function | Arity | Description |
 |---|---|---|
-| `odbc_query(conn, sql, ...)` | variadic (≥ 2) | JSON array of objects; extra args are positional bind params |
-| `odbc_clob(conn, sql, ...)` | variadic (≥ 2) | First column of first row; extra args are positional bind params |
-| `odbc_query_named(conn, sql, bind_json)` | 3 | JSON array with named `:param` binding |
-| `odbc_clob_named(conn, sql, bind_json)` | 3 | CLOB with named `:param` binding |
+| `bo_query(conn, sql, ...)` | variadic (≥ 2) | JSON array of objects; extra args are positional bind params |
+| `bo_clob(conn, sql, ...)` | variadic (≥ 2) | First column of first row; extra args are positional bind params |
+| `bo_query_named(conn, sql, bind_json)` | 3 | JSON array with named `:param` binding |
+| `bo_clob_named(conn, sql, bind_json)` | 3 | CLOB with named `:param` binding |
 
 Requires a sqlite3 binary with extension loading support (the macOS system
 sqlite3 does not — use Homebrew's `sqlite3`).
@@ -143,21 +143,21 @@ SET allow_unsigned_extensions = true;
 LOAD '/path/to/blobodbc.duckdb_extension';
 
 -- Basic query
-SELECT odbc_query('DSN=mydsn', 'SELECT name, type FROM sys.objects');
+SELECT bo_query('DSN=mydsn', 'SELECT name, type FROM sys.objects');
 
 -- Named bind parameters
-SELECT odbc_query_named('DSN=mydsn',
+SELECT bo_query_named('DSN=mydsn',
     'SELECT * FROM t WHERE id = :id', '{"id": 42}');
 
 -- CLOB mode
-SELECT odbc_clob('DSN=mydsn',
+SELECT bo_clob('DSN=mydsn',
     'SELECT * FROM t FOR JSON PATH');
 
 -- Unpack JSON into rows
 SELECT j->>'name' AS name, j->>'type' AS type
 FROM (
     SELECT unnest(from_json(
-        odbc_query('DSN=mydsn', 'SELECT name, type FROM sys.objects'),
+        bo_query('DSN=mydsn', 'SELECT name, type FROM sys.objects'),
         '["json"]'
     )) AS j
 );
@@ -167,16 +167,16 @@ FROM (
 
 | Function | Args | Description |
 |---|---|---|
-| `odbc_query(conn, sql)` | 2 | JSON array of objects |
-| `odbc_query(conn, sql, jmespath)` | 3 | JSON with JMESPath reshaping (stub — pass `''`) |
-| `odbc_clob(conn, sql)` | 2 | First column of first row |
-| `odbc_query_named(conn, sql, bind_json)` | 3 | JSON with named `:param` binding |
-| `odbc_query_named(conn, sql, bind_json, jmespath)` | 4 | Named + JMESPath (stub — pass `''`) |
-| `odbc_clob_named(conn, sql, bind_json)` | 3 | CLOB with named `:param` binding |
+| `bo_query(conn, sql)` | 2 | JSON array of objects |
+| `bo_query(conn, sql, jmespath)` | 3 | JSON with JMESPath reshaping (stub — pass `''`) |
+| `bo_clob(conn, sql)` | 2 | First column of first row |
+| `bo_query_named(conn, sql, bind_json)` | 3 | JSON with named `:param` binding |
+| `bo_query_named(conn, sql, bind_json, jmespath)` | 4 | Named + JMESPath (stub — pass `''`) |
+| `bo_clob_named(conn, sql, bind_json)` | 3 | CLOB with named `:param` binding |
 
 ### JMESPath parameter (stub)
 
-The 3-arg `odbc_query` and 4-arg `odbc_query_named` overloads accept a JMESPath
+The 3-arg `bo_query` and 4-arg `bo_query_named` overloads accept a JMESPath
 expression as the final argument. This is currently a **stub** — passing any
 non-empty string produces an error. Pass `''` (empty string) for a no-op.
 
@@ -302,7 +302,7 @@ blobodbc is one of four extensions that follow the same build pattern:
 - **[blobfilters](https://github.com/phrrngtn/blobfilters)** — Roaring bitmap
   domain fingerprinting for column classification
 
-They compose in DuckDB: `jmespath_search(odbc_query(...), expr)` chains
+They compose in DuckDB: `jmespath_search(bo_query(...), expr)` chains
 blobodbc with blobtemplates in a single expression. See
 [BLOB_EXTENSIONS.md](https://github.com/phrrngtn/rule4/blob/main/BLOB_EXTENSIONS.md)
 for the full composition diagram.
