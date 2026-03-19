@@ -99,6 +99,42 @@ static nb::str py_query_in_catalog(const std::string &conn_str,
     return out;
 }
 
+static int py_execute(const std::string &conn_str, const std::string &sql) {
+    int rc = blobodbc_execute(conn_str.c_str(), sql.c_str());
+    if (rc < 0) throw nb::value_error(blobodbc_errmsg());
+    return rc;
+}
+
+static nb::str py_primary_keys(const std::string &conn_str,
+                                const std::string &schema,
+                                const std::string &table) {
+    char *result = blobodbc_primary_keys(conn_str.c_str(), nullptr,
+                                          schema.c_str(), table.c_str());
+    if (!result) throw nb::value_error(blobodbc_errmsg());
+    nb::str out(result);
+    blobodbc_free(result);
+    return out;
+}
+
+static nb::str py_foreign_keys(const std::string &conn_str,
+                                const std::string &fk_schema,
+                                const std::string &fk_table,
+                                nb::object pk_schema,
+                                nb::object pk_table) {
+    std::string pks_s, pkt_s;
+    const char *pks = nullptr, *pkt = nullptr;
+    if (!pk_schema.is_none()) { pks_s = nb::cast<std::string>(pk_schema); pks = pks_s.c_str(); }
+    if (!pk_table.is_none())  { pkt_s = nb::cast<std::string>(pk_table);  pkt = pkt_s.c_str(); }
+
+    char *result = blobodbc_foreign_keys(conn_str.c_str(),
+        nullptr, pks, pkt,
+        nullptr, fk_schema.c_str(), fk_table.c_str());
+    if (!result) throw nb::value_error(blobodbc_errmsg());
+    nb::str out(result);
+    blobodbc_free(result);
+    return out;
+}
+
 NB_MODULE(blobodbc_ext, m) {
     m.doc() = "ODBC query execution returning JSON or text results";
 
@@ -143,4 +179,19 @@ NB_MODULE(blobodbc_ext, m) {
     m.def("query_in_catalog", &py_query_in_catalog,
           nb::arg("conn_str"), nb::arg("catalog"), nb::arg("query"),
           "Execute a query after switching to a specific catalog (database), then restore the original catalog.");
+
+    m.def("execute", &py_execute,
+          nb::arg("conn_str"), nb::arg("sql"),
+          "Execute a SQL statement (DDL/DML) without a result set. Returns affected row count.");
+
+    m.def("primary_keys", &py_primary_keys,
+          nb::arg("conn_str"), nb::arg("schema"), nb::arg("table"),
+          "Return primary key columns via SQLPrimaryKeys as a JSON array.");
+
+    m.def("foreign_keys", &py_foreign_keys,
+          nb::arg("conn_str"), nb::arg("fk_schema"), nb::arg("fk_table"),
+          nb::arg("pk_schema") = nb::none(),
+          nb::arg("pk_table") = nb::none(),
+          "Return foreign keys via SQLForeignKeys as a JSON array. "
+          "fk_schema/fk_table specify the FK side; pk_schema/pk_table optionally filter the PK side.");
 }
