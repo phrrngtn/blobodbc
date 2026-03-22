@@ -51,6 +51,7 @@ if(BUILD_PYTHON_BINDINGS)
   target_link_libraries(blobodbc_ext PRIVATE ${BO_LIBS})
   set_target_properties(blobodbc_ext PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/python/blobodbc")
+  install(TARGETS blobodbc_ext LIBRARY DESTINATION blobodbc)
 endif()
 
 # ── DuckDB C API headers (for extension build) ──────────────────
