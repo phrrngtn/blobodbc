@@ -308,6 +308,16 @@ blobodbc with blobtemplates in a single expression. See
 for the full composition diagram.
 
 
+
+## Acknowledgements
+
+ODBC connectivity uses [nanodbc](https://github.com/nanodbc/nanodbc)
+(Asher et al.), a small C++ wrapper for the native ODBC API. Distributed
+under the MIT license.
+
+JSON serialization uses [jsoncons](https://github.com/danielaparker/jsoncons)
+(Parker), distributed under the Boost Software License.
+
 ## License
 
 MIT
