@@ -99,7 +99,7 @@ Result-set columns are mapped by ODBC SQL type code:
 | `TYPE_TIMESTAMP` | JSON string (`YYYY-MM-DD HH:MM:SS.NNNNNNNNN`) |
 | binary types | JSON `null` |
 
-Result sets use `nlohmann::ordered_json` to preserve column order.
+Result sets use `jsoncons::ojson` to preserve column order.
 
 
 ## SQLite extension
@@ -245,7 +245,7 @@ All dependencies are fetched at build time via CMake FetchContent:
 | Dependency | Version | Purpose |
 |---|---|---|
 | [nanodbc](https://github.com/nanodbc/nanodbc) | main | ODBC client library |
-| [nlohmann/json](https://github.com/nlohmann/json) | v3.11.3 | JSON serialization (`ordered_json` for column-order preservation) |
+| [jsoncons](https://github.com/danielaparker/jsoncons) | v1.1.0 | JSON serialization (`ojson` for column-order preservation) |
 | [jsoncons](https://github.com/danielaparker/jsoncons) | v1.1.0 | Header-only; internal dependency for future JMESPath reshaping |
 | [DuckDB C API](https://github.com/duckdb/extension-template-c) | main | Headers only (for DuckDB extension build) |
 | [SQLite amalgamation](https://sqlite.org/) | 3.46.1 | Headers only (for SQLite extension build) |
@@ -272,7 +272,7 @@ blobodbc/
 ├── include/
 │   └── blobodbc.h              # C API header
 ├── src/
-│   └── blobodbc_core.cpp       # Core implementation (nanodbc + nlohmann/json)
+│   └── blobodbc_core.cpp       # Core implementation (nanodbc + jsoncons)
 ├── sqlite_ext/
 │   └── src/
 │       └── blobodbc_sqlite.c   # SQLite extension wrapper
