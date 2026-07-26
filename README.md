@@ -161,6 +161,12 @@ FROM (
         '["json"]'
     )) AS j
 );
+
+-- Table-valued: yields a real relation (VARCHAR columns), no JSON unpacking.
+-- Fetches per-cell straight into DuckDB vectors and runs on a single ODBC
+-- connection (the scan is pinned to one thread).
+SELECT name, type FROM bo_query_table('DSN=mydsn',
+    'SELECT name, type FROM sys.objects') WHERE type = 'U';
 ```
 
 ### Registered functions
@@ -173,6 +179,7 @@ FROM (
 | `bo_query_named(conn, sql, bind_json)` | 3 | JSON with named `:param` binding |
 | `bo_query_named(conn, sql, bind_json, jmespath)` | 4 | Named + JMESPath (stub — pass `''`) |
 | `bo_clob_named(conn, sql, bind_json)` | 3 | CLOB with named `:param` binding |
+| `bo_query_table(conn, sql)` | 2 | **Table function** — result as a relation of VARCHAR columns; single ODBC connection (scan pinned to one thread) |
 
 ### JMESPath parameter (stub)
 

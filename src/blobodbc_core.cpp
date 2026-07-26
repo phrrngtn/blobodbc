@@ -207,6 +207,79 @@ static std::string result_to_json(nanodbc::result &result) {
     return rows.to_string();
 }
 
+/* ── Materialized row set (VARCHAR cells) ─────────────────────────────
+ *
+ * Same per-column type dispatch as result_to_json, but flattened to plain
+ * strings in column order (jsoncons key order is not relied upon) so a host
+ * table function can index cells directly. */
+
+struct blobodbc_rowset {
+    std::vector<std::string> names;    /* ncols            */
+    std::vector<std::string> cells;    /* row-major, ncols*nrows (empty when null) */
+    std::vector<char>        nulls;    /* row-major, 1 = SQL NULL */
+    size_t ncols = 0;
+    size_t nrows = 0;
+};
+
+blobodbc_rowset *blobodbc_query_rowset(const char *conn_str, const char *query) {
+    try {
+        g_errmsg.clear();
+        auto rs = std::unique_ptr<blobodbc_rowset>(new blobodbc_rowset());
+        with_connection(conn_str, [&](nanodbc::connection &conn) -> int {
+            /* reset so a reconnect-and-retry starts from a clean slate */
+            rs->names.clear(); rs->cells.clear(); rs->nulls.clear();
+            rs->ncols = 0; rs->nrows = 0;
+
+            nanodbc::result result = nanodbc::execute(conn, query);
+            const int n = result.columns();
+            rs->ncols = static_cast<size_t>(n);
+            std::vector<column_getter> getters(n);
+            rs->names.resize(n);
+            for (int i = 0; i < n; i++) {
+                rs->names[i] = result.column_name(i);
+                getters[i]   = getter_for_column(result, i);
+            }
+            while (result.next()) {
+                for (int i = 0; i < n; i++) {
+                    json val;
+                    if (result.is_null(i)) {
+                        rs->cells.emplace_back(); rs->nulls.push_back(1); continue;
+                    }
+                    getters[i](val, result, i);
+                    if (val.is_null()) {
+                        rs->cells.emplace_back(); rs->nulls.push_back(1);
+                    } else if (val.is_string()) {
+                        rs->cells.push_back(val.as<std::string>()); rs->nulls.push_back(0);
+                    } else {
+                        rs->cells.push_back(val.to_string()); rs->nulls.push_back(0);
+                    }
+                }
+                rs->nrows++;
+            }
+            return 0;
+        });
+        return rs.release();
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    }
+}
+
+size_t blobodbc_rowset_ncols(const blobodbc_rowset *rs) { return rs ? rs->ncols : 0; }
+size_t blobodbc_rowset_nrows(const blobodbc_rowset *rs) { return rs ? rs->nrows : 0; }
+
+const char *blobodbc_rowset_colname(const blobodbc_rowset *rs, size_t col) {
+    return (rs && col < rs->ncols) ? rs->names[col].c_str() : nullptr;
+}
+
+const char *blobodbc_rowset_value(const blobodbc_rowset *rs, size_t row, size_t col) {
+    if (!rs || row >= rs->nrows || col >= rs->ncols) return nullptr;
+    const size_t idx = row * rs->ncols + col;
+    return rs->nulls[idx] ? nullptr : rs->cells[idx].c_str();
+}
+
+void blobodbc_rowset_free(blobodbc_rowset *rs) { delete rs; }
+
 /* ── Result set → CLOB (first column of first row) ───────────────── */
 
 static std::string result_to_clob(nanodbc::result &result) {

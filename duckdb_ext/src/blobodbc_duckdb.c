@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 DUCKDB_EXTENSION_EXTERN
 
@@ -876,11 +877,99 @@ static void register_functions(duckdb_connection connection) {
     duckdb_destroy_logical_type(&varchar_type);
 }
 
+/* ── bo_query_table(conn_str, sql) -> TABLE (single-threaded) ─────────
+ *
+ * Table-valued variant of bo_query: yields the query's rows as VARCHAR
+ * columns instead of a JSON string. The whole result is materialized at BIND
+ * time (which is where the output schema is learned); the scan just streams
+ * it. Pinned to ONE thread via duckdb_init_set_max_threads(1) — so it uses
+ * exactly one ODBC connection AND a single shared cursor is race-free,
+ * regardless of the surrounding plan's parallelism. Fetches per-cell straight
+ * into DuckDB vectors (faster than server-side FOR JSON — see benchmarks). */
+
+static void query_table_bind(duckdb_bind_info info) {
+    duckdb_value p0 = duckdb_bind_get_parameter(info, 0);
+    duckdb_value p1 = duckdb_bind_get_parameter(info, 1);
+    char *cs  = duckdb_get_varchar(p0);
+    char *sql = duckdb_get_varchar(p1);
+
+    blobodbc_rowset *rs = blobodbc_query_rowset(cs, sql);
+
+    duckdb_free(cs);
+    duckdb_free(sql);
+    duckdb_destroy_value(&p0);
+    duckdb_destroy_value(&p1);
+
+    if (!rs) {
+        duckdb_bind_set_error(info, blobodbc_errmsg());
+        return;
+    }
+
+    duckdb_logical_type vt = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
+    size_t ncols = blobodbc_rowset_ncols(rs);
+    for (size_t i = 0; i < ncols; i++)
+        duckdb_bind_add_result_column(info, blobodbc_rowset_colname(rs, i), vt);
+    duckdb_destroy_logical_type(&vt);
+
+    duckdb_bind_set_bind_data(info, rs, (duckdb_delete_callback_t)blobodbc_rowset_free);
+}
+
+static void query_table_init(duckdb_init_info info) {
+    duckdb_init_set_max_threads(info, 1);        /* one thread -> one connection, one cursor */
+    idx_t *cursor = (idx_t *)malloc(sizeof(idx_t));
+    *cursor = 0;
+    duckdb_init_set_init_data(info, cursor, free);
+}
+
+static void query_table_func(duckdb_function_info info, duckdb_data_chunk output) {
+    blobodbc_rowset *rs = (blobodbc_rowset *)duckdb_function_get_bind_data(info);
+    idx_t *cursor       = (idx_t *)duckdb_function_get_init_data(info);
+
+    const idx_t nrows = (idx_t)blobodbc_rowset_nrows(rs);
+    const idx_t ncols = (idx_t)blobodbc_rowset_ncols(rs);
+    const idx_t cap   = duckdb_vector_size();
+
+    idx_t count = 0;
+    while (*cursor < nrows && count < cap) {
+        for (idx_t c = 0; c < ncols; c++) {
+            duckdb_vector vec = duckdb_data_chunk_get_vector(output, c);
+            const char *v = blobodbc_rowset_value(rs, (size_t)*cursor, (size_t)c);
+            if (v) {
+                duckdb_vector_assign_string_element(vec, count, v);
+            } else {
+                duckdb_vector_ensure_validity_writable(vec);
+                uint64_t *validity = duckdb_vector_get_validity(vec);
+                duckdb_validity_set_row_invalid(validity, count);
+            }
+        }
+        (*cursor)++;
+        count++;
+    }
+    duckdb_data_chunk_set_size(output, count);
+}
+
+static void register_table_functions(duckdb_connection connection) {
+    duckdb_table_function tf = duckdb_create_table_function();
+    duckdb_table_function_set_name(tf, "bo_query_table");
+
+    duckdb_logical_type vt = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
+    duckdb_table_function_add_parameter(tf, vt);   /* conn_str */
+    duckdb_table_function_add_parameter(tf, vt);   /* sql      */
+    duckdb_destroy_logical_type(&vt);
+
+    duckdb_table_function_set_bind(tf, query_table_bind);
+    duckdb_table_function_set_init(tf, query_table_init);
+    duckdb_table_function_set_function(tf, query_table_func);
+    duckdb_register_table_function(connection, tf);
+    duckdb_destroy_table_function(&tf);
+}
+
 /* ── Extension entrypoint ────────────────────────────────────────── */
 
 DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection,
                              duckdb_extension_info info,
                              struct duckdb_extension_access *access) {
     register_functions(connection);
+    register_table_functions(connection);
     return true;
 }

@@ -200,6 +200,28 @@ void blobodbc_free(char *s);
  */
 const char *blobodbc_errmsg(void);
 
+/* ── Materialized row set ─────────────────────────────────────────────
+ *
+ * Executes a query and materializes the whole result as UTF-8 strings (one
+ * cell per column per row), so a host table function (e.g. DuckDB's
+ * bo_query_table) can stream typed-as-VARCHAR columns straight into its
+ * vectors — no JSON round-trip. The result is held in memory like the JSON
+ * path; intended for bounded catalog/profiling result sets. Benchmarks show
+ * this per-cell path beats server-side FOR JSON for these workloads.
+ */
+typedef struct blobodbc_rowset blobodbc_rowset;
+
+/* Execute `query` and materialize the result. Returns NULL on error
+ * (blobodbc_errmsg() for details); free with blobodbc_rowset_free. */
+blobodbc_rowset *blobodbc_query_rowset(const char *conn_str, const char *query);
+
+size_t      blobodbc_rowset_ncols(const blobodbc_rowset *rs);
+size_t      blobodbc_rowset_nrows(const blobodbc_rowset *rs);
+const char *blobodbc_rowset_colname(const blobodbc_rowset *rs, size_t col);
+/* Cell value as a NUL-terminated UTF-8 string, or NULL if the cell is SQL NULL. */
+const char *blobodbc_rowset_value(const blobodbc_rowset *rs, size_t row, size_t col);
+void        blobodbc_rowset_free(blobodbc_rowset *rs);
+
 #ifdef __cplusplus
 }
 #endif
