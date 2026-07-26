@@ -180,6 +180,20 @@ SELECT name, type FROM bo_query_table('DSN=mydsn',
 | `bo_query_named(conn, sql, bind_json, jmespath)` | 4 | Named + JMESPath (stub — pass `''`) |
 | `bo_clob_named(conn, sql, bind_json)` | 3 | CLOB with named `:param` binding |
 | `bo_query_table(conn, sql)` | 2 | **Table function** — result as a relation of VARCHAR columns; single ODBC connection (scan pinned to one thread) |
+| `bo_query_table_typed(conn, sql)` | 2 | **Table function** — like `bo_query_table` but native column types (integer→BIGINT, float/numeric→DOUBLE, else VARCHAR) |
+
+### Connection handling
+
+- Connections are cached and reused per connection string (the Kerberos/TLS
+  handshake dominates cost, ~150 ms; reuse drops repeat queries to query time).
+- **At most one query per connection string runs at a time** — a shared
+  connection is serialized by a per-string mutex, so `SELECT bo_query(conn, sql)
+  FROM manifest` fans out across *different* backends concurrently while
+  serializing each individual backend (an ODBC connection has one active
+  statement without MARS). No global ODBC state is touched (co-host-safe).
+- Result sets are fetched with ODBC **block fetch** (a bound row array), except
+  queries containing LOB / unbounded columns (`NVARCHAR(MAX)` etc.), which fall
+  back to row-at-a-time automatically (array fetch can't bind those).
 
 ### JMESPath parameter (stub)
 

@@ -2,6 +2,7 @@
 #define BLOBODBC_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -221,6 +222,36 @@ const char *blobodbc_rowset_colname(const blobodbc_rowset *rs, size_t col);
 /* Cell value as a NUL-terminated UTF-8 string, or NULL if the cell is SQL NULL. */
 const char *blobodbc_rowset_value(const blobodbc_rowset *rs, size_t row, size_t col);
 void        blobodbc_rowset_free(blobodbc_rowset *rs);
+
+/* ── Typed materialized row set ───────────────────────────────────────
+ *
+ * Like blobodbc_query_rowset, but each column keeps its NATIVE type: SQL
+ * integer types → INT64, floating/numeric → DOUBLE, everything else → STRING.
+ * The host (e.g. bo_query_table_typed) reads each column with the matching
+ * accessor and writes into a correctly-typed vector — no string round-trip on
+ * numeric columns. NUMERIC/DECIMAL collapse to DOUBLE (precision caveat);
+ * dates/binary/guid stay STRING. */
+
+typedef enum {
+    BLOBODBC_COL_STRING = 0,
+    BLOBODBC_COL_INT64  = 1,
+    BLOBODBC_COL_DOUBLE = 2
+} blobodbc_coltype;
+
+typedef struct blobodbc_rowset_typed blobodbc_rowset_typed;
+
+blobodbc_rowset_typed *blobodbc_query_rowset_typed(const char *conn_str, const char *query);
+
+size_t      blobodbc_rt_ncols(const blobodbc_rowset_typed *rs);
+size_t      blobodbc_rt_nrows(const blobodbc_rowset_typed *rs);
+const char *blobodbc_rt_colname(const blobodbc_rowset_typed *rs, size_t col);
+int         blobodbc_rt_coltype(const blobodbc_rowset_typed *rs, size_t col);   /* blobodbc_coltype */
+int         blobodbc_rt_is_null(const blobodbc_rowset_typed *rs, size_t row, size_t col);
+/* Call only the accessor matching the column's coltype (no per-call type check). */
+int64_t     blobodbc_rt_i64(const blobodbc_rowset_typed *rs, size_t row, size_t col);
+double      blobodbc_rt_f64(const blobodbc_rowset_typed *rs, size_t row, size_t col);
+const char *blobodbc_rt_str(const blobodbc_rowset_typed *rs, size_t row, size_t col);
+void        blobodbc_rt_free(blobodbc_rowset_typed *rs);
 
 #ifdef __cplusplus
 }

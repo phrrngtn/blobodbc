@@ -928,23 +928,21 @@ static void query_table_func(duckdb_function_info info, duckdb_data_chunk output
     const idx_t nrows = (idx_t)blobodbc_rowset_nrows(rs);
     const idx_t ncols = (idx_t)blobodbc_rowset_ncols(rs);
     const idx_t cap   = duckdb_vector_size();
+    const idx_t avail = nrows - *cursor;
+    const idx_t count = avail < cap ? avail : cap;
 
-    idx_t count = 0;
-    while (*cursor < nrows && count < cap) {
-        for (idx_t c = 0; c < ncols; c++) {
-            duckdb_vector vec = duckdb_data_chunk_get_vector(output, c);
-            const char *v = blobodbc_rowset_value(rs, (size_t)*cursor, (size_t)c);
-            if (v) {
-                duckdb_vector_assign_string_element(vec, count, v);
-            } else {
-                duckdb_vector_ensure_validity_writable(vec);
-                uint64_t *validity = duckdb_vector_get_validity(vec);
-                duckdb_validity_set_row_invalid(validity, count);
-            }
+    /* column-major fill: resolve the vector once per column, then loop rows */
+    for (idx_t c = 0; c < ncols; c++) {
+        duckdb_vector vec = duckdb_data_chunk_get_vector(output, c);
+        duckdb_vector_ensure_validity_writable(vec);
+        uint64_t *validity = duckdb_vector_get_validity(vec);
+        for (idx_t r = 0; r < count; r++) {
+            const char *v = blobodbc_rowset_value(rs, (size_t)(*cursor + r), (size_t)c);
+            if (v) duckdb_vector_assign_string_element(vec, r, v);
+            else   duckdb_validity_set_row_invalid(validity, r);
         }
-        (*cursor)++;
-        count++;
     }
+    *cursor += count;
     duckdb_data_chunk_set_size(output, count);
 }
 
@@ -964,6 +962,136 @@ static void register_table_functions(duckdb_connection connection) {
     duckdb_destroy_table_function(&tf);
 }
 
+/* ── bo_query_table_typed(conn_str, sql) -> TABLE (native columns) ────
+ *
+ * Like bo_query_table, but each column carries its native type (INT64→BIGINT,
+ * DOUBLE, else VARCHAR). The result metadata is parsed once at bind into an
+ * array of per-column writer function pointers; the scan calls writers[c] per
+ * cell to write straight into the correctly-typed vector — no number→string
+ * round-trip. Same single-thread / cached-connection properties as the VARCHAR
+ * variant. */
+
+typedef struct {
+    duckdb_vector vec;
+    void         *data;       /* duckdb_vector_get_data(vec) — fixed-width only */
+    uint64_t     *validity;
+} col_out;
+
+typedef void (*cell_writer)(const col_out *o, idx_t orow,
+                            const blobodbc_rowset_typed *rs, size_t srow, size_t col);
+
+static void w_i64(const col_out *o, idx_t orow, const blobodbc_rowset_typed *rs, size_t srow, size_t col) {
+    if (blobodbc_rt_is_null(rs, srow, col)) duckdb_validity_set_row_invalid(o->validity, orow);
+    else ((int64_t *)o->data)[orow] = blobodbc_rt_i64(rs, srow, col);
+}
+static void w_f64(const col_out *o, idx_t orow, const blobodbc_rowset_typed *rs, size_t srow, size_t col) {
+    if (blobodbc_rt_is_null(rs, srow, col)) duckdb_validity_set_row_invalid(o->validity, orow);
+    else ((double *)o->data)[orow] = blobodbc_rt_f64(rs, srow, col);
+}
+static void w_str(const col_out *o, idx_t orow, const blobodbc_rowset_typed *rs, size_t srow, size_t col) {
+    if (blobodbc_rt_is_null(rs, srow, col)) duckdb_validity_set_row_invalid(o->validity, orow);
+    else duckdb_vector_assign_string_element(o->vec, orow, blobodbc_rt_str(rs, srow, col));
+}
+static cell_writer writer_for(int coltype) {
+    switch (coltype) {
+        case BLOBODBC_COL_INT64:  return w_i64;
+        case BLOBODBC_COL_DOUBLE: return w_f64;
+        default:                  return w_str;
+    }
+}
+static duckdb_logical_type ltype_for(int coltype) {
+    switch (coltype) {
+        case BLOBODBC_COL_INT64:  return duckdb_create_logical_type(DUCKDB_TYPE_BIGINT);
+        case BLOBODBC_COL_DOUBLE: return duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE);
+        default:                  return duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
+    }
+}
+
+typedef struct {
+    blobodbc_rowset_typed *rs;
+    cell_writer           *writers;   /* one per column */
+} typed_bind_data;
+
+static void typed_bind_destroy(void *p) {
+    typed_bind_data *b = (typed_bind_data *)p;
+    if (b) { blobodbc_rt_free(b->rs); free(b->writers); free(b); }
+}
+
+static void query_table_typed_bind(duckdb_bind_info info) {
+    duckdb_value p0 = duckdb_bind_get_parameter(info, 0);
+    duckdb_value p1 = duckdb_bind_get_parameter(info, 1);
+    char *cs  = duckdb_get_varchar(p0);
+    char *sql = duckdb_get_varchar(p1);
+
+    blobodbc_rowset_typed *rs = blobodbc_query_rowset_typed(cs, sql);
+
+    duckdb_free(cs);
+    duckdb_free(sql);
+    duckdb_destroy_value(&p0);
+    duckdb_destroy_value(&p1);
+
+    if (!rs) {
+        duckdb_bind_set_error(info, blobodbc_errmsg());
+        return;
+    }
+
+    size_t ncols = blobodbc_rt_ncols(rs);
+    cell_writer *writers = (cell_writer *)malloc(sizeof(cell_writer) * (ncols ? ncols : 1));
+    for (size_t i = 0; i < ncols; i++) {
+        int ct = blobodbc_rt_coltype(rs, i);
+        duckdb_logical_type lt = ltype_for(ct);
+        duckdb_bind_add_result_column(info, blobodbc_rt_colname(rs, i), lt);
+        duckdb_destroy_logical_type(&lt);
+        writers[i] = writer_for(ct);
+    }
+
+    typed_bind_data *b = (typed_bind_data *)malloc(sizeof(typed_bind_data));
+    b->rs = rs;
+    b->writers = writers;
+    duckdb_bind_set_bind_data(info, b, typed_bind_destroy);
+}
+
+static void query_table_typed_func(duckdb_function_info info, duckdb_data_chunk output) {
+    typed_bind_data *b = (typed_bind_data *)duckdb_function_get_bind_data(info);
+    idx_t *cursor      = (idx_t *)duckdb_function_get_init_data(info);
+    const blobodbc_rowset_typed *rs = b->rs;
+
+    const idx_t nrows = (idx_t)blobodbc_rt_nrows(rs);
+    const idx_t ncols = (idx_t)blobodbc_rt_ncols(rs);
+    const idx_t cap   = duckdb_vector_size();
+    const idx_t avail = nrows - *cursor;
+    const idx_t count = avail < cap ? avail : cap;
+
+    for (idx_t c = 0; c < ncols; c++) {
+        col_out o;
+        o.vec      = duckdb_data_chunk_get_vector(output, c);
+        o.data     = duckdb_vector_get_data(o.vec);
+        duckdb_vector_ensure_validity_writable(o.vec);
+        o.validity = duckdb_vector_get_validity(o.vec);
+        cell_writer w = b->writers[c];
+        for (idx_t r = 0; r < count; r++)
+            w(&o, r, rs, (size_t)(*cursor + r), (size_t)c);
+    }
+    *cursor += count;
+    duckdb_data_chunk_set_size(output, count);
+}
+
+static void register_table_functions_typed(duckdb_connection connection) {
+    duckdb_table_function tf = duckdb_create_table_function();
+    duckdb_table_function_set_name(tf, "bo_query_table_typed");
+
+    duckdb_logical_type vt = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
+    duckdb_table_function_add_parameter(tf, vt);   /* conn_str */
+    duckdb_table_function_add_parameter(tf, vt);   /* sql      */
+    duckdb_destroy_logical_type(&vt);
+
+    duckdb_table_function_set_bind(tf, query_table_typed_bind);
+    duckdb_table_function_set_init(tf, query_table_init);   /* shared: max_threads=1 + cursor */
+    duckdb_table_function_set_function(tf, query_table_typed_func);
+    duckdb_register_table_function(connection, tf);
+    duckdb_destroy_table_function(&tf);
+}
+
 /* ── Extension entrypoint ────────────────────────────────────────── */
 
 DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection,
@@ -971,5 +1099,6 @@ DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection,
                              struct duckdb_extension_access *access) {
     register_functions(connection);
     register_table_functions(connection);
+    register_table_functions_typed(connection);
     return true;
 }
