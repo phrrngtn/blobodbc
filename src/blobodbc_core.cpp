@@ -10,11 +10,85 @@
 
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using json = jsoncons::json;
 
 static thread_local std::string g_errmsg;
+
+/* ── Connection cache ────────────────────────────────────────────────
+ *
+ * Opening an ODBC connection to a remote server is expensive: the Kerberos
+ * SSPI + TLS handshake dominates (~150ms to dc1), while the query itself is
+ * sub-millisecond. We keep persistent connections alive and reuse them.
+ *
+ * The cache is THREAD-LOCAL and keyed by the exact connection string, so:
+ *   - no locks, no cross-thread sharing (each DuckDB worker thread owns its
+ *     own connection — one thread per connection, which is also the only
+ *     safe way to share an ODBC connection);
+ *   - naturally bounded by the worker-thread count;
+ *   - no global ODBC state is touched, so it is safe regardless of any other
+ *     ODBC user co-hosted in the same process (e.g. pyodbc), and regardless
+ *     of load order. Because the nanodbc::connection object is never
+ *     destroyed between calls, its environment handle AND physical connection
+ *     stay alive on their own — no driver-manager pooling required.
+ *
+ * Liveness is handled optimistically: run the query, and only if it fails on
+ * a connection-level error (the handle is no longer connected, or a class-08
+ * SQLSTATE) do we drop the cached connection, reconnect, and retry ONCE. This
+ * costs zero extra round-trips on the happy path (no proactive SELECT 1).
+ */
+
+static std::unordered_map<std::string, nanodbc::connection> &connection_cache() {
+    static thread_local std::unordered_map<std::string, nanodbc::connection> cache;
+    return cache;
+}
+
+static nanodbc::connection &cached_connection(const std::string &conn_str) {
+    auto &cache = connection_cache();
+    auto it = cache.find(conn_str);
+    if (it != cache.end()) {
+        if (it->second.connected())
+            return it->second;
+        cache.erase(it);                    /* stale handle — rebuild below */
+    }
+    return cache.emplace(conn_str, nanodbc::connection(conn_str)).first->second;
+}
+
+static void drop_cached_connection(const std::string &conn_str) {
+    connection_cache().erase(conn_str);
+}
+
+/* A failure is "connection dead" (retryable) if the handle is no longer
+ * connected, or the error carries a class-08 (connection exception) or HYT
+ * (timeout) SQLSTATE. A genuine SQL error on a live connection is NOT retried. */
+static bool is_dead_connection(const nanodbc::connection &conn, const char *what) {
+    if (!conn.connected())
+        return true;
+    static const char *const codes[] = {
+        "08S01", "08003", "08001", "08004", "08007", "08P01", "HYT00", "HYT01"};
+    for (const char *code : codes)
+        if (what && std::strstr(what, code))
+            return true;
+    return false;
+}
+
+/* Run fn(conn) on a cached connection; reconnect + retry once on a dead
+ * connection. fn must be re-runnable (it is, for our idempotent reads). */
+template <class F>
+static auto with_connection(const std::string &conn_str, F &&fn)
+    -> decltype(fn(std::declval<nanodbc::connection &>())) {
+    nanodbc::connection *conn = &cached_connection(conn_str);
+    try {
+        return fn(*conn);
+    } catch (const nanodbc::database_error &e) {
+        if (!is_dead_connection(*conn, e.what()))
+            throw;                          /* live connection ⇒ real SQL error */
+        drop_cached_connection(conn_str);   /* *conn now dangling — not reused */
+        return fn(cached_connection(conn_str));
+    }
+}
 
 static char *strdup_result(const std::string &s) {
     char *out = (char *)malloc(s.size() + 1);
@@ -149,20 +223,19 @@ static std::string result_to_clob(nanodbc::result &result) {
 
 static nanodbc::result execute_query(const char *conn_str, const char *query,
                                       const char **bind_values, int bind_count) {
-    nanodbc::connection conn(conn_str);
-
-    if (bind_count > 0 && bind_values) {
-        nanodbc::statement stmt(conn);
-        nanodbc::prepare(stmt, query);
-        std::vector<std::string> vals(bind_count);
-        for (int i = 0; i < bind_count; i++) {
-            vals[i] = bind_values[i];
-            stmt.bind(i, vals[i].c_str());
+    return with_connection(conn_str, [&](nanodbc::connection &conn) {
+        if (bind_count > 0 && bind_values) {
+            nanodbc::statement stmt(conn);
+            nanodbc::prepare(stmt, query);
+            std::vector<std::string> vals(bind_count);
+            for (int i = 0; i < bind_count; i++) {
+                vals[i] = bind_values[i];
+                stmt.bind(i, vals[i].c_str());
+            }
+            return nanodbc::execute(stmt);
         }
-        return nanodbc::execute(stmt);
-    }
-
-    return nanodbc::execute(conn, query);
+        return nanodbc::execute(conn, query);
+    });
 }
 
 /* ── Named parameter rewriting ───────────────────────────────────
@@ -243,19 +316,20 @@ static nanodbc::result execute_named(const char *conn_str, const char *query,
     json binds = json::parse(bind_json);
     auto info = rewrite_named_params(query, binds);
 
-    nanodbc::connection conn(conn_str);
-    nanodbc::statement stmt(conn);
-    nanodbc::prepare(stmt, info.rewritten_sql);
+    return with_connection(conn_str, [&](nanodbc::connection &conn) {
+        nanodbc::statement stmt(conn);
+        nanodbc::prepare(stmt, info.rewritten_sql);
 
-    for (size_t i = 0; i < info.values.size(); i++) {
-        if (info.is_null[i]) {
-            stmt.bind_null(static_cast<short>(i));
-        } else {
-            stmt.bind(static_cast<short>(i), info.values[i].c_str());
+        for (size_t i = 0; i < info.values.size(); i++) {
+            if (info.is_null[i]) {
+                stmt.bind_null(static_cast<short>(i));
+            } else {
+                stmt.bind(static_cast<short>(i), info.values[i].c_str());
+            }
         }
-    }
 
-    return nanodbc::execute(stmt);
+        return nanodbc::execute(stmt);
+    });
 }
 
 /* ── Driver metadata (SQLGetInfo + SQLGetTypeInfo) ───────────────── */
@@ -742,7 +816,7 @@ static std::string build_tables(const char *conn_str,
                                  const char *catalog,
                                  const char *schema,
                                  const char *type) {
-    nanodbc::connection conn(conn_str);
+    nanodbc::connection &conn = cached_connection(conn_str);
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -774,7 +848,7 @@ static std::string build_columns(const char *conn_str,
                                   const char *catalog,
                                   const char *schema,
                                   const char *table) {
-    nanodbc::connection conn(conn_str);
+    nanodbc::connection &conn = cached_connection(conn_str);
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -806,7 +880,7 @@ static std::string build_primary_keys(const char *conn_str,
                                        const char *catalog,
                                        const char *schema,
                                        const char *table) {
-    nanodbc::connection conn(conn_str);
+    nanodbc::connection &conn = cached_connection(conn_str);
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -851,7 +925,7 @@ static std::string build_foreign_keys(const char *conn_str,
                                        const char *fk_catalog,
                                        const char *fk_schema,
                                        const char *fk_table) {
-    nanodbc::connection conn(conn_str);
+    nanodbc::connection &conn = cached_connection(conn_str);
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -887,7 +961,7 @@ static std::string build_foreign_keys(const char *conn_str,
 static std::string build_query_in_catalog(const char *conn_str,
                                            const char *catalog,
                                            const char *query) {
-    nanodbc::connection conn(conn_str);
+    nanodbc::connection &conn = cached_connection(conn_str);
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
 
     /* Save current catalog */
@@ -920,7 +994,7 @@ static std::string build_query_in_catalog(const char *conn_str,
 }
 
 static std::string build_driver_info(const char *conn_str) {
-    nanodbc::connection conn(conn_str);
+    nanodbc::connection &conn = cached_connection(conn_str);
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
     SQLHENV env = static_cast<SQLHENV>(conn.native_env_handle());
 
@@ -1071,7 +1145,7 @@ char *blobodbc_query_json_in_catalog(const char *conn_str,
 int blobodbc_execute(const char *conn_str, const char *sql) {
     try {
         g_errmsg.clear();
-        nanodbc::connection conn(conn_str);
+        nanodbc::connection &conn = cached_connection(conn_str);
         SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
         SQLHSTMT stmt = SQL_NULL_HSTMT;
         SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt);
