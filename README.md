@@ -153,14 +153,21 @@ SELECT bo_query_named('DSN=mydsn',
 SELECT bo_clob('DSN=mydsn',
     'SELECT * FROM t FOR JSON PATH');
 
--- Unpack JSON into rows
-SELECT j->>'name' AS name, j->>'type' AS type
-FROM (
-    SELECT unnest(from_json(
-        bo_query('DSN=mydsn', 'SELECT name, type FROM sys.objects'),
-        '["json"]'
-    )) AS j
-);
+-- Expand the JSON to a TYPED rowset with a CTE (from_json + recursive unnest).
+-- Because the connection string and SQL are ordinary values, ONE statement can
+-- fan out over many (heterogeneous) backends — the conn-string-as-data pattern:
+WITH manifest(backend, conn, sql) AS (
+    VALUES ('mssql', 'DSN=mssql', 'SELECT name, object_id FROM sys.objects'),
+           ('pg',    'DSN=pg',    'SELECT relname AS name, oid AS object_id FROM pg_class')
+),
+docs AS (
+    SELECT backend, bo_query(conn, sql) AS doc FROM manifest
+)
+SELECT backend,
+       unnest(from_json(doc, '[{"name":"VARCHAR","object_id":"BIGINT"}]'), recursive := true)
+FROM docs;
+-- -> columns: backend, name, object_id  (queries to different backends run
+--    concurrently; each backend is serialized to one query at a time)
 
 -- Table-valued: yields a real relation (VARCHAR columns), no JSON unpacking.
 -- Fetches per-cell straight into DuckDB vectors and runs on a single ODBC
