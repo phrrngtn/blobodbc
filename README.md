@@ -131,7 +131,7 @@ SELECT bo_clob('DSN=mydsn',
 | `bo_clob(conn, sql, ...)` | variadic (≥ 2) | First column of first row; extra args are positional bind params |
 | `bo_query_named(conn, sql, bind_json)` | 3 | JSON array with named `:param` binding |
 | `bo_clob_named(conn, sql, bind_json)` | 3 | CLOB with named `:param` binding |
-| `bo_query_rows(conn, sql)` | 2 | Compact `{"header":[…],"body":[[…]]}` — ~2× smaller, ~10× faster to expand |
+| `bo_query_rows(conn, sql)` | 2 | Compact `{"header":[…],"body":[[…]]}` — column names once, positional rows (~2× smaller). See the note in the DuckDB section — not an end-to-end speedup for remote ODBC. |
 | `bo_query_rows_named(conn, sql, bind_json)` | 3 | Compact `{header,body}` with named `:param` binding |
 
 SQLite has no table macros or `MAP` type, so there's no `bo_rows` equivalent — expand
@@ -198,7 +198,7 @@ SELECT name, type FROM bo_query_table('DSN=mydsn',
 | `bo_query_named(conn, sql, bind_json)` | 3 | JSON with named `:param` binding |
 | `bo_query_named(conn, sql, bind_json, jmespath)` | 4 | Named + JMESPath (stub — pass `''`) |
 | `bo_clob_named(conn, sql, bind_json)` | 3 | CLOB with named `:param` binding |
-| `bo_query_rows(conn, sql)` | 2 | Compact `{"header":[…],"body":[[…]]}` — ~2× smaller, ~10× faster to expand than the dict shape |
+| `bo_query_rows(conn, sql)` | 2 | Compact `{"header":[…],"body":[[…]]}` — column names once, positional rows (~2× smaller payload). See note below — **not** an end-to-end speedup here. |
 | `bo_query_rows_named(conn, sql, bind_json)` | 3 | Compact `{header,body}` with named `:param` binding |
 | `bo_query_table(conn, sql)` | 2 | **Table function** — result as a relation of VARCHAR columns; single ODBC connection (scan pinned to one thread) |
 | `bo_query_table_typed(conn, sql)` | 2 | **Table function** — like `bo_query_table` but native column types (integer→BIGINT, float/numeric→DOUBLE, else VARCHAR) |
@@ -214,6 +214,24 @@ SELECT name, type FROM bo_query_table('DSN=mydsn',
 SELECT row['name'] AS name, row['object_id']::BIGINT AS object_id
 FROM bo_rows(bo_query_rows('DSN=mydsn', 'SELECT name, object_id FROM sys.objects'));
 ```
+
+> **Note — the compact shape is not a fast path here; prefer `bo_query`.**
+> The compact `{header,body}` document is ~2× smaller than the `bo_query`
+> list-of-dicts, but end-to-end benchmarks (remote SQL Server over ODBC, 20k–80k
+> rows) show it is **equal-to-slower**, not faster:
+>
+> | rows | `bo_query` + `unnest(from_json(...), recursive)` | `bo_query_rows` + `bo_rows` |
+> |---|---|---|
+> | 20,000 | **0.80 s** | 1.13 s |
+> | 80,000 | **1.95 s** | 2.26 s |
+>
+> The bottleneck is the **ODBC fetch** (latency/row-bound, ~2 s at 80k), which is
+> the same for both shapes — so the smaller payload saves almost nothing, while
+> DuckDB's native `from_json` + `recursive unnest` on the dict shape is faster to
+> expand than the `MAP`-macro (or positional) expansion of the compact shape.
+> The compact shape may help only when the fetch is cheap (local backend), when
+> transit is bandwidth-bound rather than latency-bound, or for very wide tables.
+> Default to `bo_query`.
 
 ### Connection handling
 
