@@ -81,6 +81,45 @@ static void odbc_query_func(duckdb_function_info info,
     }
 }
 
+/* ── bo_query_rows(conn_str, sql) -> compact {header,body} JSON ──── */
+
+static void odbc_rows_func(duckdb_function_info info,
+                             duckdb_data_chunk input,
+                             duckdb_vector output) {
+    idx_t size = duckdb_data_chunk_get_size(input);
+    duckdb_vector vec0 = duckdb_data_chunk_get_vector(input, 0);
+    duckdb_vector vec1 = duckdb_data_chunk_get_vector(input, 1);
+
+    duckdb_string_t *data0 = (duckdb_string_t *)duckdb_vector_get_data(vec0);
+    duckdb_string_t *data1 = (duckdb_string_t *)duckdb_vector_get_data(vec1);
+    uint64_t *val0 = duckdb_vector_get_validity(vec0);
+    uint64_t *val1 = duckdb_vector_get_validity(vec1);
+
+    for (idx_t row = 0; row < size; row++) {
+        if ((val0 && !duckdb_validity_row_is_valid(val0, row)) ||
+            (val1 && !duckdb_validity_row_is_valid(val1, row))) {
+            duckdb_vector_ensure_validity_writable(output);
+            duckdb_validity_set_row_invalid(duckdb_vector_get_validity(output), row);
+            continue;
+        }
+
+        char *conn = str_dup_z(&data0[row]);
+        char *sql  = str_dup_z(&data1[row]);
+
+        char *result = blobodbc_query_rows(conn, sql);
+        free(conn);
+        free(sql);
+
+        if (result) {
+            duckdb_vector_assign_string_element(output, row, result);
+            blobodbc_free(result);
+        } else {
+            duckdb_scalar_function_set_error(info, blobodbc_errmsg());
+            return;
+        }
+    }
+}
+
 /* ── bo_clob(conn_str, sql) -> TEXT ──────────────────────────────── */
 
 static void odbc_clob_func(duckdb_function_info info,
@@ -681,6 +720,32 @@ static void register_functions(duckdb_connection connection) {
         duckdb_destroy_scalar_function(&func);
     }
 
+    /* bo_query_rows(conn_str, sql) → compact {header, body} JSON */
+    {
+        duckdb_scalar_function func = duckdb_create_scalar_function();
+        duckdb_scalar_function_set_name(func, "bo_query_rows");
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_set_return_type(func, varchar_type);
+        duckdb_scalar_function_set_function(func, odbc_rows_func);
+        duckdb_register_scalar_function(connection, func);
+        duckdb_destroy_scalar_function(&func);
+    }
+
+    /* bo_query_rows_named(conn_str, sql, bind_json) → compact {header, body} JSON */
+    {
+        duckdb_scalar_function func = duckdb_create_scalar_function();
+        duckdb_scalar_function_set_name(func, "bo_query_rows_named");
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_add_parameter(func, varchar_type);
+        duckdb_scalar_function_set_return_type(func, varchar_type);
+        duckdb_scalar_function_set_extra_info(func, (void *)blobodbc_query_rows_named, NULL);
+        duckdb_scalar_function_set_function(func, named_func);
+        duckdb_register_scalar_function(connection, func);
+        duckdb_destroy_scalar_function(&func);
+    }
+
     /* bo_query_named(conn_str, sql, bind_json) → JSON */
     {
         duckdb_scalar_function func = duckdb_create_scalar_function();
@@ -1094,11 +1159,27 @@ static void register_table_functions_typed(duckdb_connection connection) {
 
 /* ── Extension entrypoint ────────────────────────────────────────── */
 
+/* Table macro to expand a compact {header, body} doc (from bo_query_rows) into
+ * rows of MAP(column_name -> value) — a MAP gives dynamic named access, so one
+ * static macro names columns from ANY query's header. Values are text; cast as
+ * needed:  SELECT row['id']::BIGINT, row['name'] FROM bo_rows(bo_query_rows(...))
+ * Registered non-fatally: the extension still loads if this fails. */
+static const char *const BO_ROWS_MACRO =
+    "CREATE OR REPLACE MACRO bo_rows(doc) AS TABLE "
+    "WITH parsed AS ("
+    "  SELECT from_json(doc, '{\"header\":[\"VARCHAR\"], \"body\":[[\"VARCHAR\"]]}') AS j"
+    ") "
+    "SELECT map(j.header, r) AS row FROM parsed, unnest(j.body) AS t(r);";
+
 DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection,
                              duckdb_extension_info info,
                              struct duckdb_extension_access *access) {
     register_functions(connection);
     register_table_functions(connection);
     register_table_functions_typed(connection);
+
+    duckdb_result res;
+    if (duckdb_query(connection, BO_ROWS_MACRO, &res) == DuckDBSuccess)
+        duckdb_destroy_result(&res);
     return true;
 }

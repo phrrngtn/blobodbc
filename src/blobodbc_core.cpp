@@ -440,11 +440,48 @@ static std::string result_to_clob(nanodbc::result &result) {
     return clob;
 }
 
+/* Compact "header + body" shape: {"header":[col,...], "body":[[v,v,...],...]}.
+ * Same per-column typed values as result_to_json, but column names appear ONCE
+ * (in "header") and each body row is positional — ~2x smaller and ~10x faster
+ * to expand in the host than list-of-dicts, at the cost of being positional. */
+static std::string result_to_compact_json(nanodbc::result &result) {
+    int n = result.columns();
+    std::vector<column_getter> getters(n);
+    json header(jsoncons::json_array_arg);
+    for (int i = 0; i < n; i++) {
+        header.push_back(result.column_name(i));
+        getters[i] = getter_for_column(result, i);
+    }
+
+    json body(jsoncons::json_array_arg);
+    while (result.next()) {
+        json row(jsoncons::json_array_arg);
+        for (int i = 0; i < n; i++) {
+            json v;
+            if (result.is_null(i)) v = json::null();
+            else getters[i](v, result, i);
+            row.push_back(std::move(v));
+        }
+        body.push_back(std::move(row));
+    }
+
+    json out(jsoncons::json_object_arg);
+    out["header"] = std::move(header);
+    out["body"]   = std::move(body);
+    return out.to_string();
+}
+
 /* ── Execute helpers ─────────────────────────────────────────────── */
 
-static nanodbc::result execute_query(const char *conn_str, const char *query,
-                                      const char **bind_values, int bind_count) {
-    return with_connection(conn_str, [&](nanodbc::connection &conn) {
+/* Execute `query` and CONSUME its result to a string, all under the per-conn_str
+ * lease — so the whole query (execute AND fetch) is serialized, not just the
+ * execute. `consume` is a `std::string(nanodbc::result&)` (e.g. result_to_json).
+ * On a dead connection with_connection reconnects and re-runs consume (idempotent
+ * reads). */
+template <class Consume>
+static std::string run_query(const char *conn_str, const char *query,
+                             const char **bind_values, int bind_count, Consume consume) {
+    return with_connection(conn_str, [&](nanodbc::connection &conn) -> std::string {
         if (bind_count > 0 && bind_values) {
             nanodbc::statement stmt(conn);
             nanodbc::prepare(stmt, query);
@@ -453,9 +490,11 @@ static nanodbc::result execute_query(const char *conn_str, const char *query,
                 vals[i] = bind_values[i];
                 stmt.bind(i, vals[i].c_str());
             }
-            return nanodbc::execute(stmt);
+            nanodbc::result r = nanodbc::execute(stmt);
+            return consume(r);
         }
-        return execute_block_aware(conn, query);
+        nanodbc::result r = execute_block_aware(conn, query);
+        return consume(r);
     });
 }
 
@@ -532,12 +571,13 @@ static NamedBindInfo rewrite_named_params(const char *sql, const json &binds) {
     return info;
 }
 
-static nanodbc::result execute_named(const char *conn_str, const char *query,
-                                      const char *bind_json) {
+template <class Consume>
+static std::string run_named(const char *conn_str, const char *query,
+                             const char *bind_json, Consume consume) {
     json binds = json::parse(bind_json);
     auto info = rewrite_named_params(query, binds);
 
-    return with_connection(conn_str, [&](nanodbc::connection &conn) {
+    return with_connection(conn_str, [&](nanodbc::connection &conn) -> std::string {
         nanodbc::statement stmt(conn);
         nanodbc::prepare(stmt, info.rewritten_sql);
 
@@ -549,7 +589,8 @@ static nanodbc::result execute_named(const char *conn_str, const char *query,
             }
         }
 
-        return nanodbc::execute(stmt);
+        nanodbc::result r = nanodbc::execute(stmt);
+        return consume(r);
     });
 }
 
@@ -1249,8 +1290,34 @@ char *blobodbc_query_json_params(const char *conn_str, const char *query,
                                   const char **bind_values, int bind_count) {
     try {
         g_errmsg.clear();
-        auto result = execute_query(conn_str, query, bind_values, bind_count);
-        return strdup_result(result_to_json(result));
+        return strdup_result(run_query(conn_str, query, bind_values, bind_count, result_to_json));
+    } catch (const nanodbc::database_error &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    }
+}
+
+char *blobodbc_query_rows(const char *conn_str, const char *query) {
+    try {
+        g_errmsg.clear();
+        return strdup_result(run_query(conn_str, query, nullptr, 0, result_to_compact_json));
+    } catch (const nanodbc::database_error &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    } catch (const std::exception &e) {
+        g_errmsg = e.what();
+        return nullptr;
+    }
+}
+
+char *blobodbc_query_rows_named(const char *conn_str, const char *query,
+                                 const char *bind_json) {
+    try {
+        g_errmsg.clear();
+        return strdup_result(run_named(conn_str, query, bind_json, result_to_compact_json));
     } catch (const nanodbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
@@ -1268,8 +1335,7 @@ char *blobodbc_query_clob_params(const char *conn_str, const char *query,
                                   const char **bind_values, int bind_count) {
     try {
         g_errmsg.clear();
-        auto result = execute_query(conn_str, query, bind_values, bind_count);
-        return strdup_result(result_to_clob(result));
+        return strdup_result(run_query(conn_str, query, bind_values, bind_count, result_to_clob));
     } catch (const nanodbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
@@ -1283,8 +1349,7 @@ char *blobodbc_query_json_named(const char *conn_str, const char *query,
                                  const char *bind_json) {
     try {
         g_errmsg.clear();
-        auto result = execute_named(conn_str, query, bind_json);
-        return strdup_result(result_to_json(result));
+        return strdup_result(run_named(conn_str, query, bind_json, result_to_json));
     } catch (const nanodbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
@@ -1298,8 +1363,7 @@ char *blobodbc_query_clob_named(const char *conn_str, const char *query,
                                  const char *bind_json) {
     try {
         g_errmsg.clear();
-        auto result = execute_named(conn_str, query, bind_json);
-        return strdup_result(result_to_clob(result));
+        return strdup_result(run_named(conn_str, query, bind_json, result_to_clob));
     } catch (const nanodbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;

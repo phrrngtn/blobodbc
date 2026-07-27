@@ -131,6 +131,18 @@ SELECT bo_clob('DSN=mydsn',
 | `bo_clob(conn, sql, ...)` | variadic (≥ 2) | First column of first row; extra args are positional bind params |
 | `bo_query_named(conn, sql, bind_json)` | 3 | JSON array with named `:param` binding |
 | `bo_clob_named(conn, sql, bind_json)` | 3 | CLOB with named `:param` binding |
+| `bo_query_rows(conn, sql)` | 2 | Compact `{"header":[…],"body":[[…]]}` — ~2× smaller, ~10× faster to expand |
+| `bo_query_rows_named(conn, sql, bind_json)` | 3 | Compact `{header,body}` with named `:param` binding |
+
+SQLite has no table macros or `MAP` type, so there's no `bo_rows` equivalent — expand
+the compact shape **positionally** with `json_each` over `$.body`:
+
+```sql
+SELECT json_extract(je.value, '$[0]') AS name,
+       json_extract(je.value, '$[1]') AS object_id
+FROM json_each(bo_query_rows('DSN=mydsn', 'SELECT name, object_id FROM sys.objects'),
+               '$.body') AS je;
+```
 
 Requires a sqlite3 binary with extension loading support (the macOS system
 sqlite3 does not — use Homebrew's `sqlite3`).
@@ -186,8 +198,22 @@ SELECT name, type FROM bo_query_table('DSN=mydsn',
 | `bo_query_named(conn, sql, bind_json)` | 3 | JSON with named `:param` binding |
 | `bo_query_named(conn, sql, bind_json, jmespath)` | 4 | Named + JMESPath (stub — pass `''`) |
 | `bo_clob_named(conn, sql, bind_json)` | 3 | CLOB with named `:param` binding |
+| `bo_query_rows(conn, sql)` | 2 | Compact `{"header":[…],"body":[[…]]}` — ~2× smaller, ~10× faster to expand than the dict shape |
+| `bo_query_rows_named(conn, sql, bind_json)` | 3 | Compact `{header,body}` with named `:param` binding |
 | `bo_query_table(conn, sql)` | 2 | **Table function** — result as a relation of VARCHAR columns; single ODBC connection (scan pinned to one thread) |
 | `bo_query_table_typed(conn, sql)` | 2 | **Table function** — like `bo_query_table` but native column types (integer→BIGINT, float/numeric→DOUBLE, else VARCHAR) |
+
+### Registered macros
+
+| Macro | Description |
+|---|---|
+| `bo_rows(doc)` | Table macro — expands a compact `{header,body}` doc (from `bo_query_rows`) to rows of `MAP(column → value)`; access with `row['col']` (cast as needed). Auto-registered at load. |
+
+```sql
+-- Compact shape + bo_rows macro: named access without repeating keys per row.
+SELECT row['name'] AS name, row['object_id']::BIGINT AS object_id
+FROM bo_rows(bo_query_rows('DSN=mydsn', 'SELECT name, object_id FROM sys.objects'));
+```
 
 ### Connection handling
 

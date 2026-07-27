@@ -201,6 +201,22 @@ void blobodbc_free(char *s);
  */
 const char *blobodbc_errmsg(void);
 
+/*
+ * Execute a query and return a COMPACT result document:
+ *   {"header": ["c1","c2",...], "body": [[v,v,...], [v,v,...], ...]}
+ *
+ * Column names appear once (in "header"); each "body" row is a positional array
+ * of typed values (same typing as blobodbc_query_json). This is ~2x smaller and
+ * ~10x faster to expand in the host than the list-of-dicts of blobodbc_query_json,
+ * at the cost of being positional (the host maps body columns by header order).
+ *
+ * Returns a malloc'd JSON string on success (free with blobodbc_free), NULL on
+ * error (blobodbc_errmsg() for details).
+ */
+char *blobodbc_query_rows(const char *conn_str, const char *query);
+char *blobodbc_query_rows_named(const char *conn_str, const char *query,
+                                const char *bind_json);
+
 /* ── Materialized row set ─────────────────────────────────────────────
  *
  * Executes a query and materializes the whole result as UTF-8 strings (one
