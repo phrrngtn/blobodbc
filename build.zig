@@ -110,6 +110,12 @@ pub fn build(b: *std.Build) void {
         .core = core,
         .duckdb_module = duckdb_mod,
         .sqlite_module = sqlite_mod,
+        // The ODBC entry points are resolved from the host's driver manager at
+        // load, not linked in — unixODBC IS host configuration (odbcinst.ini,
+        // installed drivers), so bundling it would be wrong. This is the one
+        // repo in the family whose artifacts are deliberately not
+        // self-contained, and declaring it here is how that stays visible.
+        .allow_undefined = &.{"SQL"},
     });
     artifacts.lib.?.installHeader(b.path("include/blobodbc.h"), "blobodbc.h");
 }
