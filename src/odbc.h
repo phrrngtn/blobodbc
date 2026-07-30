@@ -55,9 +55,18 @@ int      bo_conn_alive(bo_conn *conn);
    (SQLGetInfo, SQLTables, SQLColumns, SQLPrimaryKeys, SQLForeignKeys). */
 void    *bo_conn_handle(bo_conn *conn);
 
-/* Execute and return a result to iterate; NULL on failure. `rowset` sets
-   SQL_ATTR_ROW_ARRAY_SIZE, as the nanodbc path did. */
-bo_result *bo_conn_query(bo_conn *conn, const char *sql, long rowset);
+/* The shared SQLHENV, for SQLDrivers enumeration. */
+void    *bo_env_handle(void);
+
+/* Execute and return a result to iterate; NULL on failure. */
+bo_result *bo_conn_query(bo_conn *conn, const char *sql);
+
+/* As above with positional parameters, all bound as strings — which is what the
+   nanodbc path did; the driver coerces to each parameter's real type.
+   is_null[i] non-zero binds SQL NULL at that position. */
+bo_result *bo_conn_query_params(bo_conn *conn, const char *sql,
+                                const char *const *values, const int *is_null,
+                                int n);
 
 /* Statements with no result set (DDL/DML). 0 on success. */
 int      bo_conn_execute(bo_conn *conn, const char *sql);

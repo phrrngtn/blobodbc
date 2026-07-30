@@ -46,23 +46,41 @@ fn base(b: *std.Build, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode)
 }
 
 const Deps = struct {
-    nanodbc: *std.Build.Dependency,
     jsoncons: *std.Build.Dependency,
     odbc: []const u8,
 };
 
+/// The adapter: a Zig ODBC layer (src/odbc.zig, the module root) plus the C++
+/// core compiled alongside it. The C++ calls the Zig through src/odbc.h — one
+/// module, so they link without an intermediate library.
+///
+/// nanodbc used to sit between them and is gone: it is a C++ convenience wrapper
+/// over a C API, and it stopped compiling against a current libc++ (it
+/// instantiates std::basic_string<unsigned char>, whose char_traits
+/// specialisation libc++ removed per P1148R0).
 fn addCore(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
     mod.addIncludePath(b.path("include"));
+    mod.addIncludePath(b.path("src")); // odbc.h
     mod.addIncludePath(d.jsoncons.path("include"));
-    mod.addIncludePath(d.nanodbc.path("."));
     mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ d.odbc, "include" }) });
 
-    mod.addCSourceFile(.{ .file = d.nanodbc.path("nanodbc/nanodbc.cpp"), .flags = cxx_flags });
     mod.addCSourceFile(.{ .file = b.path("src/blobodbc_core.cpp"), .flags = cxx_flags });
 
     mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ d.odbc, "lib" }) });
     mod.linkSystemLibrary("odbc", .{});
     mod.link_libcpp = true;
+}
+
+/// A module rooted at the Zig ODBC layer, with the C++ core compiled into it.
+fn coreModule(b: *std.Build, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, d: Deps) *std.Build.Module {
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/odbc.zig"),
+        .target = t,
+        .optimize = o,
+        .link_libc = true,
+    });
+    addCore(b, mod, d);
+    return mod;
 }
 
 pub fn build(b: *std.Build) void {
@@ -71,21 +89,17 @@ pub fn build(b: *std.Build) void {
 
     const bz = b.dependency("blobzig", .{ .target = target, .optimize = optimize });
     const d: Deps = .{
-        .nanodbc = b.dependency("nanodbc", .{}),
         .jsoncons = b.dependency("jsoncons", .{}),
         .odbc = odbcPrefix(b),
     };
 
-    const core = base(b, target, optimize);
-    addCore(b, core, d);
+    const core = coreModule(b, target, optimize, d);
 
-    const duckdb_mod = base(b, target, optimize);
-    addCore(b, duckdb_mod, d);
+    const duckdb_mod = coreModule(b, target, optimize, d);
     duckdb_mod.addIncludePath(bz.namedLazyPath("duckdb_capi_include"));
     duckdb_mod.addCSourceFile(.{ .file = b.path("duckdb_ext/src/blobodbc_duckdb.c"), .flags = c_flags });
 
-    const sqlite_mod = base(b, target, optimize);
-    addCore(b, sqlite_mod, d);
+    const sqlite_mod = coreModule(b, target, optimize, d);
     sqlite_mod.addIncludePath(bz.namedLazyPath("sqlite_include"));
     sqlite_mod.addCSourceFile(.{ .file = b.path("sqlite_ext/src/blobodbc_sqlite.c"), .flags = c_flags });
 

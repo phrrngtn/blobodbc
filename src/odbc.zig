@@ -363,30 +363,13 @@ pub export fn bo_conn_handle(conn: ?*Conn) callconv(.c) ?*anyopaque {
     return cn.dbc;
 }
 
-/// Prepare and execute `sql`, returning a result to iterate. `rowset` sets
-/// SQL_ATTR_ROW_ARRAY_SIZE, as the nanodbc path did.
-pub export fn bo_conn_query(conn: ?*Conn, sql: [*:0]const u8, rowset: c_long) callconv(.c) ?*Result {
-    g_err[0] = 0;
-    const cn = conn orelse {
-        setErr("null connection");
-        return null;
-    };
+/// The shared SQLHENV, for SQLDrivers enumeration.
+pub export fn bo_env_handle() callconv(.c) ?*anyopaque {
+    return env();
+}
 
-    var stmt: ?*anyopaque = null;
-    if (!isOk(c.SQLAllocHandle(c.SQL_HANDLE_STMT, cn.dbc, &stmt))) {
-        captureDiag(c.SQL_HANDLE_DBC, cn.dbc, "SQLAllocHandle(STMT)");
-        return null;
-    }
-    if (rowset > 1) {
-        _ = c.SQLSetStmtAttr(stmt, c.SQL_ATTR_ROW_ARRAY_SIZE, @ptrFromInt(@as(usize, @intCast(rowset))), 0);
-    }
-
-    if (!isOk(c.SQLExecDirect(stmt, @constCast(sql), c.SQL_NTS))) {
-        captureDiag(c.SQL_HANDLE_STMT, stmt, "SQLExecDirect");
-        _ = c.SQLFreeHandle(c.SQL_HANDLE_STMT, stmt);
-        return null;
-    }
-
+/// Wrap an executed statement handle in a Result and describe its columns.
+fn finishResult(stmt: ?*anyopaque) ?*Result {
     const r = alloc.create(Result) catch {
         _ = c.SQLFreeHandle(c.SQL_HANDLE_STMT, stmt);
         setErr("out of memory");
@@ -398,6 +381,100 @@ pub export fn bo_conn_query(conn: ?*Conn, sql: [*:0]const u8, rowset: c_long) ca
         return null;
     };
     return r;
+}
+
+fn allocStmt(cn: *Conn) ?*anyopaque {
+    var stmt: ?*anyopaque = null;
+    if (!isOk(c.SQLAllocHandle(c.SQL_HANDLE_STMT, cn.dbc, &stmt))) {
+        captureDiag(c.SQL_HANDLE_DBC, cn.dbc, "SQLAllocHandle(STMT)");
+        return null;
+    }
+    return stmt;
+}
+
+/// Execute `sql` and return a result to iterate; NULL on failure.
+pub export fn bo_conn_query(conn: ?*Conn, sql: [*:0]const u8) callconv(.c) ?*Result {
+    g_err[0] = 0;
+    const cn = conn orelse {
+        setErr("null connection");
+        return null;
+    };
+    const stmt = allocStmt(cn) orelse return null;
+
+    if (!isOk(c.SQLExecDirect(stmt, @constCast(sql), c.SQL_NTS))) {
+        captureDiag(c.SQL_HANDLE_STMT, stmt, "SQLExecDirect");
+        _ = c.SQLFreeHandle(c.SQL_HANDLE_STMT, stmt);
+        return null;
+    }
+    return finishResult(stmt);
+}
+
+/// Execute `sql` with positional parameters, all bound as strings — which is what
+/// the nanodbc path did (`stmt.bind(i, value.c_str())`); the driver coerces to the
+/// parameter's real type. `is_null[i]` non-zero binds SQL NULL for that position.
+pub export fn bo_conn_query_params(
+    conn: ?*Conn,
+    sql: [*:0]const u8,
+    values: [*]const ?[*:0]const u8,
+    is_null: ?[*]const c_int,
+    n: c_int,
+) callconv(.c) ?*Result {
+    g_err[0] = 0;
+    const cn = conn orelse {
+        setErr("null connection");
+        return null;
+    };
+    const count: usize = @intCast(@max(n, 0));
+    const stmt = allocStmt(cn) orelse return null;
+
+    if (!isOk(c.SQLPrepare(stmt, @constCast(sql), c.SQL_NTS))) {
+        captureDiag(c.SQL_HANDLE_STMT, stmt, "SQLPrepare");
+        _ = c.SQLFreeHandle(c.SQL_HANDLE_STMT, stmt);
+        return null;
+    }
+
+    // The indicators must stay alive until SQLExecute reads them, so they are
+    // heap-allocated for the duration rather than living in this frame.
+    const inds = alloc.alloc(c.SQLLEN, count) catch {
+        _ = c.SQLFreeHandle(c.SQL_HANDLE_STMT, stmt);
+        setErr("out of memory");
+        return null;
+    };
+    defer alloc.free(inds);
+
+    for (0..count) |i| {
+        const null_here = if (is_null) |f| f[i] != 0 else false;
+        const val: [*:0]const u8 = if (null_here) "" else (values[i] orelse "");
+        const len = std.mem.span(val).len;
+        inds[i] = if (null_here) c.SQL_NULL_DATA else c.SQL_NTS;
+
+        const rc = c.SQLBindParameter(
+            stmt,
+            @intCast(i + 1),
+            c.SQL_PARAM_INPUT,
+            c.SQL_C_CHAR,
+            c.SQL_VARCHAR,
+            // Column size 0 lets the driver take it from the prepared parameter's
+            // own metadata; passing the string length would cap longer values.
+            if (len == 0) 1 else len,
+            0,
+            @constCast(@ptrCast(val)),
+            @intCast(len + 1),
+            &inds[i],
+        );
+        if (!isOk(rc)) {
+            captureDiag(c.SQL_HANDLE_STMT, stmt, "SQLBindParameter");
+            _ = c.SQLFreeHandle(c.SQL_HANDLE_STMT, stmt);
+            return null;
+        }
+    }
+
+    if (!isOk(c.SQLExecute(stmt))) {
+        captureDiag(c.SQL_HANDLE_STMT, stmt, "SQLExecute");
+        _ = c.SQLFreeHandle(c.SQL_HANDLE_STMT, stmt);
+        return null;
+    }
+    return finishResult(stmt);
 }
 
 /// Statements with no result set (DDL/DML). Returns 0 on success.

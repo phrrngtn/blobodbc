@@ -1,6 +1,6 @@
 #include "blobodbc.h"
 
-#include <nanodbc/nanodbc.h>
+#include "odbc.h"
 
 #include <jsoncons/json.hpp>
 #include <jsoncons_ext/jsonpatch/jsonpatch.hpp>
@@ -10,12 +10,112 @@
 
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 using json = jsoncons::json;
+
+/* ── nanodbc-shaped RAII over the Zig ODBC layer (src/odbc.zig) ───────
+ *
+ * nanodbc was dropped: it is a C++ convenience wrapper over a C API, and it no
+ * longer compiles against a current libc++ (it instantiates
+ * std::basic_string<unsigned char>, whose std::char_traits specialisation libc++
+ * removed per P1148R0). This shim presents the same handful of operations the
+ * code below already used, so the pooling, retry and JSON shaping are untouched.
+ *
+ * Errors cross the C boundary as NULL / -1 plus a thread-local message; they are
+ * rethrown here as database_error so the existing catch-and-retry logic keeps
+ * working unchanged.
+ */
+namespace odbc {
+
+struct database_error : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+[[noreturn]] inline void throw_last() { throw database_error(bo_odbc_errmsg()); }
+
+class connection {
+public:
+    connection() = default;
+    explicit connection(const std::string &conn_str) {
+        h_ = bo_conn_open(conn_str.c_str());
+        if (!h_) throw_last();
+    }
+    ~connection() { reset(); }
+
+    connection(connection &&o) noexcept : h_(o.h_) { o.h_ = nullptr; }
+    connection &operator=(connection &&o) noexcept {
+        if (this != &o) { reset(); h_ = o.h_; o.h_ = nullptr; }
+        return *this;
+    }
+    connection(const connection &) = delete;
+    connection &operator=(const connection &) = delete;
+
+    bool connected() const { return h_ && bo_conn_alive(h_); }
+    bo_conn *raw() const { return h_; }
+    void *native_dbc_handle() const { return h_ ? bo_conn_handle(h_) : nullptr; }
+    void *native_env_handle() const { return bo_env_handle(); }
+
+private:
+    void reset() { if (h_) { bo_conn_close(h_); h_ = nullptr; } }
+    bo_conn *h_ = nullptr;
+};
+
+class result {
+public:
+    explicit result(bo_result *h) : h_(h) { if (!h_) throw_last(); }
+    ~result() { if (h_) bo_res_free(h_); }
+
+    result(result &&o) noexcept : h_(o.h_) { o.h_ = nullptr; }
+    result &operator=(result &&o) noexcept {
+        if (this != &o) { if (h_) bo_res_free(h_); h_ = o.h_; o.h_ = nullptr; }
+        return *this;
+    }
+    result(const result &) = delete;
+    result &operator=(const result &) = delete;
+
+    int columns() const { return bo_res_ncols(h_); }
+    std::string column_name(int i) const { return bo_res_colname(h_, i); }
+    int column_datatype(int i) const { return bo_res_coltype(h_, i); }
+    bool is_null(int i) const { return bo_res_is_null(h_, i) != 0; }
+
+    bool next() {
+        const int rc = bo_res_next(h_);
+        if (rc < 0) throw_last();
+        return rc == 1;
+    }
+
+    template <class T> T get(int i) const;
+
+private:
+    bo_result *h_ = nullptr;
+};
+
+template <> inline int64_t     result::get<int64_t>(int i) const     { return bo_res_i64(h_, i); }
+template <> inline double      result::get<double>(int i) const      { return bo_res_f64(h_, i); }
+template <> inline std::string result::get<std::string>(int i) const { return bo_res_str(h_, i); }
+
+/* Execute with no parameters. */
+inline result execute(connection &conn, const char *sql) {
+    return result(bo_conn_query(conn.raw(), sql));
+}
+
+/* Execute with positional parameters, all bound as strings — as the nanodbc path
+ * did; the driver coerces to each parameter's real type. */
+inline result execute(connection &conn, const char *sql,
+                      const std::vector<std::string> &values,
+                      const std::vector<int> &nulls) {
+    std::vector<const char *> ptrs(values.size());
+    for (size_t i = 0; i < values.size(); i++) ptrs[i] = values[i].c_str();
+    return result(bo_conn_query_params(conn.raw(), sql, ptrs.data(), nulls.data(),
+                                       static_cast<int>(values.size())));
+}
+
+}  // namespace odbc
 
 static thread_local std::string g_errmsg;
 
@@ -28,7 +128,7 @@ static const long BO_FETCH_ROWSET = 1024;
  *
  * Opening an ODBC connection is expensive: the Kerberos SSPI + TLS handshake
  * dominates (~150ms to dc1), while the query itself is sub-millisecond. We keep
- * ONE persistent nanodbc::connection per distinct connection string, shared
+ * ONE persistent odbc::connection per distinct connection string, shared
  * across all threads and guarded by a per-string mutex. This:
  *   - reuses the (expensive) connection across calls;
  *   - enforces AT MOST ONE query in flight per connection string at any time —
@@ -46,7 +146,7 @@ static const long BO_FETCH_ROWSET = 1024;
 
 struct pooled_conn {
     std::mutex          mtx;         /* serializes queries on this connection */
-    nanodbc::connection conn;
+    odbc::connection conn;
     bool                live = false;
 };
 
@@ -63,7 +163,7 @@ static pooled_conn &pooled_for(const std::string &conn_str) {
 /* A failure is "connection dead" (retryable) if the handle is no longer
  * connected, or the error carries a class-08 (connection exception) or HYT
  * (timeout) SQLSTATE. A genuine SQL error on a live connection is NOT retried. */
-static bool is_dead_connection(const nanodbc::connection &conn, const char *what) {
+static bool is_dead_connection(const odbc::connection &conn, const char *what) {
     if (!conn.connected())
         return true;
     static const char *const codes[] = {
@@ -82,14 +182,14 @@ public:
     explicit connection_lease(const std::string &conn_str)
         : conn_str_(conn_str), pc_(pooled_for(conn_str)), lock_(pc_.mtx) {}
 
-    nanodbc::connection &connection() {
+    odbc::connection &connection() {
         if (!pc_.live || !pc_.conn.connected()) {
-            pc_.conn = nanodbc::connection(conn_str_);
+            pc_.conn = odbc::connection(conn_str_);
             pc_.live = true;
         }
         return pc_.conn;
     }
-    nanodbc::connection &raw() { return pc_.conn; }
+    odbc::connection &raw() { return pc_.conn; }
     void invalidate() { pc_.live = false; }
 
 private:
@@ -103,11 +203,11 @@ private:
  * reads). */
 template <class F>
 static auto with_connection(const std::string &conn_str, F &&fn)
-    -> decltype(fn(std::declval<nanodbc::connection &>())) {
+    -> decltype(fn(std::declval<odbc::connection &>())) {
     connection_lease lease(conn_str);
     try {
         return fn(lease.connection());
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         if (!is_dead_connection(lease.raw(), e.what()))
             throw;                          /* live connection ⇒ real SQL error */
         lease.invalidate();
@@ -117,7 +217,7 @@ static auto with_connection(const std::string &conn_str, F &&fn)
 
 /* Defined below; used by the scalar execute path and the row-set materializers.
  * Executes with ODBC block fetch, falling back to row-at-a-time for LOB columns. */
-static nanodbc::result execute_block_aware(nanodbc::connection &conn, const char *query);
+static odbc::result execute_block_aware(odbc::connection &conn, const char *query);
 
 static char *strdup_result(const std::string &s) {
     char *out = (char *)malloc(s.size() + 1);
@@ -127,41 +227,30 @@ static char *strdup_result(const std::string &s) {
 
 /* ── Column type dispatch ────────────────────────────────────────── */
 
-using column_getter = void (*)(json &, nanodbc::result &, short);
+using column_getter = void (*)(json &, odbc::result &, short);
 
-static void get_int_value(json &jv, nanodbc::result &r, short col) {
-    jv = r.get<long long>(col);
+static void get_int_value(json &jv, odbc::result &r, short col) {
+    jv = r.get<int64_t>(col);
 }
 
-static void get_float_value(json &jv, nanodbc::result &r, short col) {
+static void get_float_value(json &jv, odbc::result &r, short col) {
     jv = r.get<double>(col);
 }
 
-static void get_string_value(json &jv, nanodbc::result &r, short col) {
+static void get_string_value(json &jv, odbc::result &r, short col) {
     jv = r.get<std::string>(col);
 }
 
-static void get_date_value(json &jv, nanodbc::result &r, short col) {
-    nanodbc::date d = r.get<nanodbc::date>(col);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d", d.year, d.month, d.day);
-    jv = std::string(buf);
-}
+/* Dates and timestamps arrive from the ODBC layer already rendered as
+ * "YYYY-MM-DD" and "YYYY-MM-DD HH:MM:SS.fffffffff" — the same formats the
+ * bespoke nanodbc::date / nanodbc::timestamp getters produced — so they need no
+ * separate handling here. See src/odbc.zig. */
 
-static void get_timestamp_value(json &jv, nanodbc::result &r, short col) {
-    nanodbc::timestamp ts = r.get<nanodbc::timestamp>(col);
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%09d",
-             ts.year, ts.month, ts.day,
-             ts.hour, ts.min, ts.sec, ts.fract);
-    jv = std::string(buf);
-}
-
-static void get_null_value(json &jv, nanodbc::result &, short) {
+static void get_null_value(json &jv, odbc::result &, short) {
     jv = json::null();
 }
 
-static column_getter getter_for_column(nanodbc::result &r, short col) {
+static column_getter getter_for_column(odbc::result &r, short col) {
     int sql_type = r.column_datatype(col);
     switch (sql_type) {
         /* Integers */
@@ -192,9 +281,9 @@ static column_getter getter_for_column(nanodbc::result &r, short col) {
 
         /* Dates and timestamps */
         case 91: /* SQL_TYPE_DATE */
-            return get_date_value;
+            return get_string_value;
         case 93: /* SQL_TYPE_TIMESTAMP */
-            return get_timestamp_value;
+            return get_string_value;
 
         /* Binary — return null rather than crash */
         case -2: /* SQL_BINARY */
@@ -207,7 +296,7 @@ static column_getter getter_for_column(nanodbc::result &r, short col) {
 
 /* ── Result set → JSON ───────────────────────────────────────────── */
 
-static std::string result_to_json(nanodbc::result &result) {
+static std::string result_to_json(odbc::result &result) {
     int n = result.columns();
     std::vector<std::string> names(n);
     std::vector<column_getter> getters(n);
@@ -236,35 +325,20 @@ static std::string result_to_json(nanodbc::result &result) {
     return rows.to_string();
 }
 
-/* Prepare `query`, inspect its result-column types, and execute with block
- * fetch (BO_FETCH_ROWSET) — UNLESS a column is a LOB / unbounded type (long
- * varchar/varbinary, or unknown/huge column size, e.g. NVARCHAR(MAX)). Array
- * (rowset > 1) fetch cannot bind those — SQLFetch fails with HY109 — so such
- * queries fall back to row-at-a-time (rowset = 1), which is LOB-safe. One
- * prepare + one execute; the type inspection adds no extra server round-trip. */
-static nanodbc::result execute_block_aware(nanodbc::connection &conn, const char *query) {
-    nanodbc::statement stmt(conn);
-    nanodbc::prepare(stmt, query);
-
-    SQLHSTMT hs = static_cast<SQLHSTMT>(stmt.native_statement_handle());
-    SQLSMALLINT ncols = 0;
-    SQLNumResultCols(hs, &ncols);
-
-    long rowset = BO_FETCH_ROWSET;
-    for (SQLSMALLINT i = 1; i <= ncols; i++) {
-        SQLSMALLINT sql_type = 0, decimal_digits = 0, nullable = 0, name_len = 0;
-        SQLULEN column_size = 0;
-        SQLCHAR name[256];
-        if (!SQL_SUCCEEDED(SQLDescribeCol(hs, i, name, sizeof(name), &name_len,
-                                          &sql_type, &column_size, &decimal_digits, &nullable)))
-            continue;
-        const bool long_type = (sql_type == -1 ||    /* SQL_LONGVARCHAR   */
-                                sql_type == -10 ||   /* SQL_WLONGVARCHAR  */
-                                sql_type == -4);     /* SQL_LONGVARBINARY */
-        const bool unbounded = (column_size == 0 || column_size > 65535);  /* NVARCHAR(MAX) &c. */
-        if (long_type || unbounded) { rowset = 1; break; }
-    }
-    return stmt.execute(rowset);
+/* Execute `query` and return its result.
+ *
+ * The nanodbc version inspected the prepared statement's column types and chose
+ * between ODBC array fetch (1024 rows per round-trip) and row-at-a-time, because
+ * array fetch cannot bind LOB / unbounded columns (SQLFetch fails with HY109).
+ *
+ * The Zig layer reads with SQLGetData, which is LOB-safe for every column, so
+ * that fork is gone and so is the pre-execute type inspection. NOTE this also
+ * gives up the block fetch: rows now cost one driver round-trip each rather than
+ * one per 1024. That is a throughput regression on tall result sets and is worth
+ * restoring via SQLBindCol with a memory-budgeted rowset — see ZIG_PORT_NOTES.md.
+ */
+static odbc::result execute_block_aware(odbc::connection &conn, const char *query) {
+    return odbc::execute(conn, query);
 }
 
 /* ── Materialized row set (VARCHAR cells) ─────────────────────────────
@@ -285,12 +359,12 @@ blobodbc_rowset *blobodbc_query_rowset(const char *conn_str, const char *query) 
     try {
         g_errmsg.clear();
         auto rs = std::unique_ptr<blobodbc_rowset>(new blobodbc_rowset());
-        with_connection(conn_str, [&](nanodbc::connection &conn) -> int {
+        with_connection(conn_str, [&](odbc::connection &conn) -> int {
             /* reset so a reconnect-and-retry starts from a clean slate */
             rs->names.clear(); rs->cells.clear(); rs->nulls.clear();
             rs->ncols = 0; rs->nrows = 0;
 
-            nanodbc::result result = execute_block_aware(conn, query);
+            odbc::result result = execute_block_aware(conn, query);
             const int n = result.columns();
             rs->ncols = static_cast<size_t>(n);
             std::vector<column_getter> getters(n);
@@ -346,7 +420,7 @@ void blobodbc_rowset_free(blobodbc_rowset *rs) { delete rs; }
  * fetched from ODBC with the matching C type (no number→string conversion at
  * the driver, no downstream parse). Mirrors getter_for_column's SQL-type map. */
 
-static blobodbc_coltype coltype_for(nanodbc::result &r, short col) {
+static blobodbc_coltype coltype_for(odbc::result &r, short col) {
     switch (r.column_datatype(col)) {
         case -7: case -6: case 5: case 4: case -5:   /* bit, tinyint, smallint, integer, bigint */
             return BLOBODBC_COL_INT64;
@@ -375,10 +449,10 @@ blobodbc_rowset_typed *blobodbc_query_rowset_typed(const char *conn_str, const c
     try {
         g_errmsg.clear();
         auto rs = std::unique_ptr<blobodbc_rowset_typed>(new blobodbc_rowset_typed());
-        with_connection(conn_str, [&](nanodbc::connection &conn) -> int {
+        with_connection(conn_str, [&](odbc::connection &conn) -> int {
             rs->cols.clear(); rs->nrows = 0;
 
-            nanodbc::result result = execute_block_aware(conn, query);
+            odbc::result result = execute_block_aware(conn, query);
             const int n = result.columns();
             rs->cols.resize(n);
             for (int i = 0; i < n; i++) {
@@ -430,7 +504,7 @@ void blobodbc_rt_free(blobodbc_rowset_typed *rs) { delete rs; }
 
 /* ── Result set → CLOB (first column of first row) ───────────────── */
 
-static std::string result_to_clob(nanodbc::result &result) {
+static std::string result_to_clob(odbc::result &result) {
     std::string clob;
     if (result.next()) {
         clob = result.get<std::string>(0);
@@ -444,7 +518,7 @@ static std::string result_to_clob(nanodbc::result &result) {
  * Same per-column typed values as result_to_json, but column names appear ONCE
  * (in "header") and each body row is positional — ~2x smaller and ~10x faster
  * to expand in the host than list-of-dicts, at the cost of being positional. */
-static std::string result_to_compact_json(nanodbc::result &result) {
+static std::string result_to_compact_json(odbc::result &result) {
     int n = result.columns();
     std::vector<column_getter> getters(n);
     json header(jsoncons::json_array_arg);
@@ -475,25 +549,21 @@ static std::string result_to_compact_json(nanodbc::result &result) {
 
 /* Execute `query` and CONSUME its result to a string, all under the per-conn_str
  * lease — so the whole query (execute AND fetch) is serialized, not just the
- * execute. `consume` is a `std::string(nanodbc::result&)` (e.g. result_to_json).
+ * execute. `consume` is a `std::string(odbc::result&)` (e.g. result_to_json).
  * On a dead connection with_connection reconnects and re-runs consume (idempotent
  * reads). */
 template <class Consume>
 static std::string run_query(const char *conn_str, const char *query,
                              const char **bind_values, int bind_count, Consume consume) {
-    return with_connection(conn_str, [&](nanodbc::connection &conn) -> std::string {
+    return with_connection(conn_str, [&](odbc::connection &conn) -> std::string {
         if (bind_count > 0 && bind_values) {
-            nanodbc::statement stmt(conn);
-            nanodbc::prepare(stmt, query);
             std::vector<std::string> vals(bind_count);
-            for (int i = 0; i < bind_count; i++) {
-                vals[i] = bind_values[i];
-                stmt.bind(i, vals[i].c_str());
-            }
-            nanodbc::result r = nanodbc::execute(stmt);
+            std::vector<int> nulls(bind_count, 0);
+            for (int i = 0; i < bind_count; i++) vals[i] = bind_values[i];
+            odbc::result r = odbc::execute(conn, query, vals, nulls);
             return consume(r);
         }
-        nanodbc::result r = execute_block_aware(conn, query);
+        odbc::result r = execute_block_aware(conn, query);
         return consume(r);
     });
 }
@@ -577,19 +647,13 @@ static std::string run_named(const char *conn_str, const char *query,
     json binds = json::parse(bind_json);
     auto info = rewrite_named_params(query, binds);
 
-    return with_connection(conn_str, [&](nanodbc::connection &conn) -> std::string {
-        nanodbc::statement stmt(conn);
-        nanodbc::prepare(stmt, info.rewritten_sql);
+    return with_connection(conn_str, [&](odbc::connection &conn) -> std::string {
+        std::vector<int> nulls(info.values.size());
+        for (size_t i = 0; i < info.values.size(); i++)
+            nulls[i] = info.is_null[i] ? 1 : 0;
 
-        for (size_t i = 0; i < info.values.size(); i++) {
-            if (info.is_null[i]) {
-                stmt.bind_null(static_cast<short>(i));
-            } else {
-                stmt.bind(static_cast<short>(i), info.values[i].c_str());
-            }
-        }
-
-        nanodbc::result r = nanodbc::execute(stmt);
+        odbc::result r = odbc::execute(conn, info.rewritten_sql.c_str(),
+                                       info.values, nulls);
         return consume(r);
     });
 }
@@ -1079,7 +1143,7 @@ static std::string build_tables(const char *conn_str,
                                  const char *schema,
                                  const char *type) {
     connection_lease lease(conn_str);
-    nanodbc::connection &conn = lease.connection();
+    odbc::connection &conn = lease.connection();
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1112,7 +1176,7 @@ static std::string build_columns(const char *conn_str,
                                   const char *schema,
                                   const char *table) {
     connection_lease lease(conn_str);
-    nanodbc::connection &conn = lease.connection();
+    odbc::connection &conn = lease.connection();
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1145,7 +1209,7 @@ static std::string build_primary_keys(const char *conn_str,
                                        const char *schema,
                                        const char *table) {
     connection_lease lease(conn_str);
-    nanodbc::connection &conn = lease.connection();
+    odbc::connection &conn = lease.connection();
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1191,7 +1255,7 @@ static std::string build_foreign_keys(const char *conn_str,
                                        const char *fk_schema,
                                        const char *fk_table) {
     connection_lease lease(conn_str);
-    nanodbc::connection &conn = lease.connection();
+    odbc::connection &conn = lease.connection();
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1228,7 +1292,7 @@ static std::string build_query_in_catalog(const char *conn_str,
                                            const char *catalog,
                                            const char *query) {
     connection_lease lease(conn_str);
-    nanodbc::connection &conn = lease.connection();
+    odbc::connection &conn = lease.connection();
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
 
     /* Save current catalog */
@@ -1244,7 +1308,7 @@ static std::string build_query_in_catalog(const char *conn_str,
     /* Execute the query */
     std::string json_result;
     try {
-        nanodbc::result result = execute_block_aware(conn, query);
+        odbc::result result = execute_block_aware(conn, query);
         json_result = result_to_json(result);
     } catch (...) {
         /* Restore original catalog before re-throwing */
@@ -1262,7 +1326,7 @@ static std::string build_query_in_catalog(const char *conn_str,
 
 static std::string build_driver_info(const char *conn_str) {
     connection_lease lease(conn_str);
-    nanodbc::connection &conn = lease.connection();
+    odbc::connection &conn = lease.connection();
     SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
     SQLHENV env = static_cast<SQLHENV>(conn.native_env_handle());
 
@@ -1291,7 +1355,7 @@ char *blobodbc_query_json_params(const char *conn_str, const char *query,
     try {
         g_errmsg.clear();
         return strdup_result(run_query(conn_str, query, bind_values, bind_count, result_to_json));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
@@ -1304,7 +1368,7 @@ char *blobodbc_query_rows(const char *conn_str, const char *query) {
     try {
         g_errmsg.clear();
         return strdup_result(run_query(conn_str, query, nullptr, 0, result_to_compact_json));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
@@ -1318,7 +1382,7 @@ char *blobodbc_query_rows_named(const char *conn_str, const char *query,
     try {
         g_errmsg.clear();
         return strdup_result(run_named(conn_str, query, bind_json, result_to_compact_json));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
@@ -1336,7 +1400,7 @@ char *blobodbc_query_clob_params(const char *conn_str, const char *query,
     try {
         g_errmsg.clear();
         return strdup_result(run_query(conn_str, query, bind_values, bind_count, result_to_clob));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
@@ -1350,7 +1414,7 @@ char *blobodbc_query_json_named(const char *conn_str, const char *query,
     try {
         g_errmsg.clear();
         return strdup_result(run_named(conn_str, query, bind_json, result_to_json));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
@@ -1364,7 +1428,7 @@ char *blobodbc_query_clob_named(const char *conn_str, const char *query,
     try {
         g_errmsg.clear();
         return strdup_result(run_named(conn_str, query, bind_json, result_to_clob));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
@@ -1377,7 +1441,7 @@ char *blobodbc_driver_info(const char *conn_str) {
     try {
         g_errmsg.clear();
         return strdup_result(build_driver_info(conn_str));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
@@ -1393,7 +1457,7 @@ char *blobodbc_tables(const char *conn_str,
     try {
         g_errmsg.clear();
         return strdup_result(build_tables(conn_str, catalog, schema, type));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
@@ -1409,7 +1473,7 @@ char *blobodbc_columns(const char *conn_str,
     try {
         g_errmsg.clear();
         return strdup_result(build_columns(conn_str, catalog, schema, table));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
@@ -1424,7 +1488,7 @@ char *blobodbc_query_json_in_catalog(const char *conn_str,
     try {
         g_errmsg.clear();
         return strdup_result(build_query_in_catalog(conn_str, catalog, query));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
@@ -1437,7 +1501,7 @@ int blobodbc_execute(const char *conn_str, const char *sql) {
     try {
         g_errmsg.clear();
         connection_lease lease(conn_str);
-    nanodbc::connection &conn = lease.connection();
+    odbc::connection &conn = lease.connection();
         SQLHDBC dbc = static_cast<SQLHDBC>(conn.native_dbc_handle());
         SQLHSTMT stmt = SQL_NULL_HSTMT;
         SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt);
@@ -1468,7 +1532,7 @@ int blobodbc_execute(const char *conn_str, const char *sql) {
          * Clamp to 0 so callers can distinguish error (-1 from the
          * C API wrapper) from "no rows affected". */
         return static_cast<int>(row_count < 0 ? 0 : row_count);
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return -1;
     } catch (const std::exception &e) {
@@ -1484,7 +1548,7 @@ char *blobodbc_primary_keys(const char *conn_str,
     try {
         g_errmsg.clear();
         return strdup_result(build_primary_keys(conn_str, catalog, schema, table));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
@@ -1505,7 +1569,7 @@ char *blobodbc_foreign_keys(const char *conn_str,
         return strdup_result(build_foreign_keys(conn_str,
             pk_catalog, pk_schema, pk_table,
             fk_catalog, fk_schema, fk_table));
-    } catch (const nanodbc::database_error &e) {
+    } catch (const odbc::database_error &e) {
         g_errmsg = e.what();
         return nullptr;
     } catch (const std::exception &e) {
