@@ -7,3 +7,8 @@ build/
 __pycache__/
 *.egg-info/
 test/connections.toml
+
+# Zig build
+.zig-cache/
+zig-out/
+zig-pkg/
