@@ -1,8 +1,19 @@
 version = 1
 revision = 3
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 
 [[package]]
 name = "blobodbc"
 version = "0.2.2"
 source = { editable = "." }
+dependencies = [
+    { name = "blobzig" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "blobzig", editable = "../blobzig" }]
+
+[[package]]
+name = "blobzig"
+version = "0.1.0"
+source = { editable = "../blobzig" }
