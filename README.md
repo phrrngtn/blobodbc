@@ -12,7 +12,7 @@ etc.) and returns results as a JSON array of objects or as a single text value
 Builds as a loadable extension for **SQLite**, **DuckDB**, and as a **Python**
 module via nanobind. Part of the
 [blob extension family](https://github.com/phrrngtn/rule4/blob/main/BLOB_EXTENSIONS.md)
-— core C API, thin wrappers for each host, CMake + FetchContent, no shared
+— core C API, thin wrappers for each host, `zig build`, no shared
 libraries.
 
 
@@ -302,40 +302,19 @@ place it on `sys.path`.
 
 ## Building
 
-```bash
-cmake -B build \
-  -DBUILD_SQLITE_EXTENSION=ON \
-  -DBUILD_DUCKDB_EXTENSION=ON \
-  -DBUILD_PYTHON_BINDINGS=ON \
-  ..
+`zig build`. The only prerequisite is Zig 0.16.0 — no CMake, no Make, no
+`configure`.
 
-cmake --build build
+```sh
+zig build                    # everything, into zig-out/lib/
+zig build --list-steps       # tests and other targets this repo offers
+zig build -Doptimize=ReleaseFast
+zig build -Dtarget=x86_64-linux-gnu
 ```
 
-All dependencies are fetched at build time via CMake FetchContent:
-
-| Dependency | Version | Purpose |
-|---|---|---|
-| [nanodbc](https://github.com/nanodbc/nanodbc) | main | ODBC client library |
-| [jsoncons](https://github.com/danielaparker/jsoncons) | v1.1.0 | JSON serialization (`ojson` for column-order preservation) |
-| [jsoncons](https://github.com/danielaparker/jsoncons) | v1.1.0 | Header-only; internal dependency for future JMESPath reshaping |
-| [DuckDB C API](https://github.com/duckdb/extension-template-c) | main | Headers only (for DuckDB extension build) |
-| [SQLite amalgamation](https://sqlite.org/) | 3.46.1 | Headers only (for SQLite extension build) |
-
-**System requirement**: unixODBC (`brew install unixodbc` on macOS) and an ODBC
-driver for your target database.
-
-### Build targets
-
-| Flag | Target | Output |
-|---|---|---|
-| `BUILD_SQLITE_EXTENSION` | `blobodbc_sqlite` | `build/sqlite/blobodbc.so` |
-| `BUILD_DUCKDB_EXTENSION` | `blobodbc_duckdb` | `build/duckdb/blobodbc.so` |
-| `BUILD_PYTHON_BINDINGS` | `blobodbc_ext` | `python/blobodbc/blobodbc_ext.*.so` |
-
-On macOS, the SQLite build also creates a `blobodbc.dylib` symlink for
-compatibility.
-
+Full instructions — cross-compilation, verifying an extension actually loads,
+per-repo exceptions, Python wheels — are in
+[Building the Blob Family](../blobzig/docs/Building%20the%20Blob%20Family.md).
 
 ## Project layout
 
@@ -351,11 +330,10 @@ blobodbc/
 ├── duckdb_ext/
 │   ├── src/
 │   │   └── blobodbc_duckdb.c   # DuckDB extension wrapper (C API)
-│   └── append_metadata.py      # DuckDB extension signing utility
 ├── python/
-│   └── bindings.cpp            # nanobind Python bindings
+│   └── blobodbc/               # ctypes package over the C ABI
 ├── example/                    # C example (optional)
-└── CMakeLists.txt
+└── build.zig
 ```
 
 The pattern is shared across the blob extension family: core C/C++
